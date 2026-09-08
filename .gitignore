@@ -3,5 +3,6 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+# generated benchmark output; results/dashboard.png is checked in for the README
 results/*.csv
 results/*.html

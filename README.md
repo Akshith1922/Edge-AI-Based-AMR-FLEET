@@ -31,7 +31,7 @@ The warehouse is deliberately hard: five racks per bank separated by
 Every interior aisle is a chokepoint two robots cannot share, so contention is
 structural rather than incidental.
 
-<!-- layout: receiving (west) -> 5 rack banks with 1-wide aisles -> pick/pack + shipping (east) -->
+![The dashboard running Cross-Aisle Rush Hour in coordinated mode](results/dashboard.png)
 
 ## How the code maps to the algorithm reference
 
@@ -129,7 +129,8 @@ rate survives, the task-time comparison shifts toward baseline.
 
 ## Dashboard
 
-`python3 run_dashboard.py` then open <http://127.0.0.1:8000>.
+`python3 run_dashboard.py` then open <http://127.0.0.1:8000>
+(screenshot above).
 
 * **Coordinated / Baseline** — rebuilds the same scenario under the other mode.
 * **Play / Step / Reset**, speed and fleet-size sliders, scenario picker.
