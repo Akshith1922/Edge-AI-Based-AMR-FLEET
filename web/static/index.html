@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AMR Fleet Coordination — Live Dashboard</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🤖</text></svg>">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">
+    <span class="dot"></span>
+    <div>
+      <h1>Edge-AI Fleet Coordination</h1>
+      <p id="scenarioLabel">loading…</p>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="seg" id="modeSeg" role="group" aria-label="Coordination mode">
+      <button data-mode="coordinated" class="on">Coordinated</button>
+      <button data-mode="baseline">Baseline</button>
+    </div>
+
+    <button id="playBtn" class="btn primary" aria-label="Play or pause">▶ Play</button>
+    <button id="stepBtn" class="btn" aria-label="Advance one tick">Step</button>
+    <button id="resetBtn" class="btn" aria-label="Reset scenario">Reset</button>
+
+    <label class="field">Speed
+      <input id="speed" type="range" min="1" max="30" step="1" value="6">
+      <output id="speedOut">6×</output>
+    </label>
+    <label class="field">Robots
+      <input id="robots" type="range" min="2" max="12" step="1" value="8">
+      <output id="robotsOut">8</output>
+    </label>
+    <label class="field">Scenario
+      <select id="scenario"></select>
+    </label>
+  </div>
+</header>
+
+<main>
+  <section class="stage">
+    <div class="stageHead">
+      <h2>Warehouse floor</h2>
+      <div class="legend" id="legend"></div>
+      <div class="toggles">
+        <label><input type="checkbox" id="showHeat"> Reservation heat</label>
+        <label><input type="checkbox" id="showPaths" checked> Planned paths</label>
+      </div>
+    </div>
+    <div class="canvasWrap">
+      <canvas id="grid"></canvas>
+      <div class="hint">Click a floor cell to drop or lift an obstacle · click a robot to kill or revive it</div>
+    </div>
+    <div class="charts">
+      <figure><figcaption>Tasks delivered</figcaption><canvas class="spark" id="c_done"></canvas></figure>
+      <figure><figcaption>Robots waiting</figcaption><canvas class="spark" id="c_wait"></canvas></figure>
+      <figure><figcaption>Avg task time</figcaption><canvas class="spark" id="c_avg"></canvas></figure>
+    </div>
+  </section>
+
+  <aside class="rail">
+    <div class="tiles" id="tiles"></div>
+
+    <section class="card">
+      <h3>Algorithms firing <span class="sub">this tick</span></h3>
+      <div class="algos" id="algos"></div>
+    </section>
+
+    <section class="card grow">
+      <h3>Event log</h3>
+      <ol class="log" id="log"></ol>
+    </section>
+
+    <section class="card">
+      <h3>Fleet <span class="sub">click a robot to kill or revive it</span></h3>
+      <div class="fleet" id="fleet"></div>
+    </section>
+
+    <section class="card">
+      <h3>Chokepoints <span class="sub">single-file aisles</span></h3>
+      <div class="chokes" id="chokes"></div>
+    </section>
+  </aside>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>

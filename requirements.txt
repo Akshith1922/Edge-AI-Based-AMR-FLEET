@@ -1,0 +1,5 @@
+# No third-party runtime dependencies: the simulation, the dashboard server and
+# the benchmark all use only the Python standard library (3.10+).
+#
+# Optional, for development only:
+#   playwright   # browser smoke-testing of the dashboard
