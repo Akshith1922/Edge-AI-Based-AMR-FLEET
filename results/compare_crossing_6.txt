@@ -1,0 +1,16 @@
+
+=== stop_and_wait ===
+  policy            stop_and_wait
+  robots / tasks    6 / 12
+  completed         12/12
+  makespan          262.0 s
+  throughput        2.748 tasks/min
+  mean task time    113.2 s
+  robot collisions  0
+  wall contacts     0
+  distance driven   583.4 m
+  time yielding     189.7 s
+  replans           673
+  (ran in 74.9 s wall clock)
+
+=== cooperative ===

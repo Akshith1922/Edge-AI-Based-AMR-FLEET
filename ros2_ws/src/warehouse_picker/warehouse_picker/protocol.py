@@ -67,6 +67,12 @@ COURTESY_PENALTY = 1.5       # ... and to an inferior peer's, to spread traffic
 PASS_SIDE = -1.0             # -1 keeps right (clockwise); +1 keeps left
 PASS_OFFSET_M = 0.75
 ONCOMING_RADIUS = 4.5
+# Moving over only works while there is still room to move over *into*. Once
+# two robots are closer than this, each is already inside the other's clearance
+# envelope: every forward trajectory either has is rejected, and nudging the aim
+# point sideways cannot help because the obstacle is the other robot, not the
+# geometry. Past this range someone has to give way instead.
+PASS_ENGAGE_M = 1.9
 
 MIN_TIME_GAP = 2.0           # seconds of following distance when throttling
 STALL_SPEED = 0.05           # below this a robot counts as not moving
@@ -86,7 +92,7 @@ class FleetState:
 
     __slots__ = ("id", "seq", "lamport", "stamp", "x", "y", "yaw", "v", "w",
                  "battery", "mode", "goal", "task", "claim", "eta", "priority",
-                 "waiting_for", "blocked", "retreating")
+                 "waiting_for", "blocked", "retreating", "stalled")
 
     def __init__(self, robot_id):
         self.id = robot_id
@@ -105,6 +111,10 @@ class FleetState:
         self.waiting_for = None     # peer id this robot is held up behind
         self.blocked = []           # aisle cells reported impassable
         self.retreating = False
+        # Broadcast, because a robot cannot tell from a peer's position alone
+        # whether it is briefly slowing or wedged. Deciding who untangles a knot
+        # needs to know which of the robots in it are actually stuck.
+        self.stalled = False
 
     def to_json(self):
         return json.dumps({
@@ -122,6 +132,7 @@ class FleetState:
             "waiting_for": self.waiting_for,
             "blocked": [[c, r] for (c, r) in self.blocked],
             "retreating": self.retreating,
+            "stalled": self.stalled,
         }, separators=(",", ":"))
 
     @staticmethod
@@ -157,6 +168,7 @@ class FleetState:
                 "waiting_for": d.get("waiting_for"),
                 "blocked": [(int(c), int(r)) for c, r in d.get("blocked", [])],
                 "retreating": bool(d.get("retreating", False)),
+                "stalled": bool(d.get("stalled", False)),
             }
         except (KeyError, TypeError, ValueError):
             return None
@@ -247,6 +259,12 @@ class Coordinator:
 
     # -- helpers -----------------------------------------------------------
 
+    def abandon_retreat(self):
+        """Drop a retreat in progress. Called when the agent's own watchdog
+        takes over, so the two do not fight for the same robot."""
+        self._retreat_target = None
+        self._retreat_until = 0.0
+
     def is_single_file(self, x, y):
         """True where two robots cannot pass each other."""
         return self.grid.free_width(x, y) < self.pass_width
@@ -288,6 +306,17 @@ class Coordinator:
 
         # --- 1. build the planning penalty layer --------------------------
         for peer in peers:
+            # Where a peer *is* costs something even when it has published no
+            # intent. A robot parked at a pick face, loading or idle, claims no
+            # cells at all -- so without this every peer routes straight through
+            # it, arrives, and discovers the space is taken. The footprint is
+            # penalised rather than blocked because the peer will move, and a
+            # route that is briefly expensive is better than no route.
+            if abs(peer.get("v", 0.0)) < STALL_SPEED:
+                here = self.grid.world_to_grid(peer["x"], peer["y"])
+                decision.penalties[here] = (decision.penalties.get(here, 0.0)
+                                            + COURTESY_PENALTY)
+
             superior = rank_key(peer) > my_key
             weight = CLAIM_PENALTY if superior else COURTESY_PENALTY
             for i, cell in enumerate(peer["claim"]):
@@ -329,16 +358,21 @@ class Coordinator:
             towards = (math.cos(me.yaw) * dx + math.sin(me.yaw) * dy) / dist
             if facing >= HEAD_ON_DOT or towards <= 0.4:
                 continue
-            if not self.is_single_file(me.x, me.y):
-                # Wide enough for two: shift over and keep going. Closer
-                # traffic gets a firmer nudge.
+            if dist > PASS_ENGAGE_M and not self.is_single_file(me.x, me.y):
+                # Still far enough apart to slip past: shift over and keep
+                # going. Closer traffic gets a firmer nudge.
                 decision.lateral_bias = PASS_SIDE * PASS_OFFSET_M * min(
-                    1.0, (ONCOMING_RADIUS - dist) / (ONCOMING_RADIUS - 1.0))
+                    1.0, (ONCOMING_RADIUS - dist) / (ONCOMING_RADIUS - PASS_ENGAGE_M))
                 decision.reason = f"passing {peer['id']}"
                 continue
             if rank_key(peer) > my_key:
                 head_on = peer
                 break
+            # I have right of way, but say who I am negotiating with so the
+            # wait-for graph can see the pair. A robot that reports nothing is
+            # invisible to deadlock detection.
+            decision.waiting_for = decision.waiting_for or None
+            decision.reason = f"holding line against {peer['id']}"
 
         now_retreating = self._retreat_target is not None and now < self._retreat_until
         if head_on or now_retreating:
@@ -363,6 +397,18 @@ class Coordinator:
         self._retreat_target = None
 
         # --- 4. throttle behind a superior peer ---------------------------
+        #
+        # Only where the corridor is single-file. On open floor the local
+        # planner already holds a safe gap, using the actual geometry rather
+        # than a broadcast position a cycle old, and layering a speed cap on top
+        # of it just makes the fleet crawl: an earlier version threw this at
+        # every claim overlap and spent four times as long yielding as the
+        # uncoordinated control arm, while delivering less. A coordination layer
+        # earns its place by handling what the local planner *cannot* see -- two
+        # robots entering one aisle from opposite ends -- not by second-guessing
+        # what it can.
+        if conflict is not None and not self.is_single_file(me.x, me.y):
+            conflict = None
         if conflict is not None:
             gap = math.hypot(conflict["x"] - me.x, conflict["y"] - me.y)
             # Hold a time gap rather than a distance gap: the faster the robot

@@ -78,6 +78,15 @@ class TestMap(unittest.TestCase):
         self.assertGreater(wide, narrow)
         self.assertGreater(narrow, 2.0)
 
+    def test_corridor_width_does_not_depend_on_where_in_it_you_stand(self):
+        """Reading the aisle width off the robot's own clearance makes a robot
+        hugging one rack look like it is in a single-file corridor, and then
+        every ordinary passing manoeuvre is treated as a head-on."""
+        centre = self.plan.free_width(2.9, -13.0)
+        hugging = self.plan.free_width(1.9, -13.0)
+        self.assertAlmostEqual(centre, hugging, delta=0.3)
+        self.assertGreater(hugging, 2.5)
+
     def test_floor_is_one_connected_region(self):
         regions = self.plan.connected_regions()
         free = sum(1 for v in self.plan.cells if not v)
@@ -384,6 +393,111 @@ class TestAllocation(unittest.TestCase):
         fresh = pool.effective_cost(task, 10.0, 0.0)
         stale = pool.effective_cost(task, 10.0, 30.0)
         self.assertLess(stale, fresh)
+
+
+class TestLiveness(unittest.TestCase):
+    """A stall the coordination layer cannot name must still not be permanent."""
+
+    def make_agent(self, robot_id="amr_1", home=None):
+        self.clock = [0.0]
+        return EdgeAgent(robot_id, load_plan(), limits=Limits(dt=0.1), home=home,
+                         clock=lambda: self.clock[0])
+
+    def test_stalling_is_measured_by_progress_not_by_speed(self):
+        """A robot shuffling back and forth in a jam clears any speed
+        threshold repeatedly while going nowhere, so a speed test never sees
+        the stall and the watchdog never fires."""
+        agent = self.make_agent()
+        for i in range(140):
+            self.clock[0] = i * 0.1
+            # twitch either side of the stall speed, net displacement ~0
+            agent.set_pose(2.9 + 0.02 * (i % 2), -18.0, math.pi / 2,
+                           0.3 if i % 2 else -0.3)
+            agent._track_history.append((self.clock[0], agent.x, agent.y))
+        self.assertGreater(agent._stalled_for(self.clock[0]), 5.0)
+
+    def test_a_robot_that_is_getting_somewhere_is_not_stalled(self):
+        agent = self.make_agent()
+        for i in range(140):
+            self.clock[0] = i * 0.1
+            agent.set_pose(2.9, -18.0 + i * 0.05, math.pi / 2, 0.5)
+            agent._track_history.append((self.clock[0], agent.x, agent.y))
+        self.assertEqual(agent._stalled_for(self.clock[0]), 0.0)
+
+    def test_only_one_robot_in_a_knot_backs_off(self):
+        """Three robots that all back off at once are exactly as jammed, only
+        further apart. The lowest-ranked one goes; the rest hold."""
+        low = self.make_agent("amr_1")
+        low.set_pose(2.9, -18.0, 0.0)
+        high = self.make_agent("amr_3")
+        high.set_pose(2.9, -18.0, 0.0)
+        knot = [{"id": "amr_2", "x": 3.2, "y": -18.0, "yaw": 0.0, "v": 0.0,
+                 "priority": 1.0, "lamport": 0, "stalled": True},
+                {"id": "amr_3", "x": 2.6, "y": -18.0, "yaw": 0.0, "v": 0.0,
+                 "priority": 1.0, "lamport": 0, "stalled": True}]
+        self.assertTrue(low._my_turn_to_escape(knot))
+        self.assertFalse(high._my_turn_to_escape(
+            [dict(p, stalled=True) for p in knot if p["id"] != "amr_3"]
+            + [{"id": "amr_1", "x": 3.2, "y": -18.0, "yaw": 0.0, "v": 0.0,
+                "priority": 1.0, "lamport": 0, "stalled": True}]))
+
+    def test_a_peer_that_is_moving_does_not_hold_up_the_escape(self):
+        agent = self.make_agent("amr_3")
+        agent.set_pose(2.9, -18.0, 0.0)
+        self.assertTrue(agent._my_turn_to_escape(
+            [{"id": "amr_1", "x": 3.2, "y": -18.0, "yaw": 0.0, "v": 0.6,
+              "priority": 1.0, "lamport": 0, "stalled": False}]))
+
+    def test_it_will_not_reverse_into_something(self):
+        agent = self.make_agent()
+        agent.set_pose(2.9, -18.0, math.pi / 2)
+        behind = [{"id": "amr_2", "x": 2.9, "y": -18.6, "yaw": math.pi / 2,
+                   "v": 0.0}]
+        self.assertFalse(agent._reverse_is_clear(behind))
+        self.assertTrue(agent._reverse_is_clear([]))
+
+    def test_an_idle_robot_goes_back_to_its_standby_bay(self):
+        """Otherwise it parks on the pick face it just delivered to and every
+        other robot has to route around it for the rest of the shift."""
+        home = (-12.9, -19.0)
+        agent = self.make_agent(home=home)
+        agent.set_pose(2.9, -18.0, math.pi / 2)
+        for i in range(120):
+            self.clock[0] = i * 0.1
+            out = agent.step(self.clock[0])
+        self.assertEqual(agent.state.mode, "STANDBY")
+        self.assertEqual(agent.state.goal, home)
+        # The bay is behind and to the side, so the first move is a turn.
+        self.assertGreater(abs(out.v) + abs(out.w), 0.0)
+
+    def test_a_robot_with_no_standby_bay_simply_stays_put(self):
+        agent = self.make_agent(home=None)
+        agent.set_pose(2.9, -18.0, math.pi / 2)
+        for i in range(120):
+            self.clock[0] = i * 0.1
+            out = agent.step(self.clock[0])
+        self.assertEqual(agent.state.mode, "IDLE")
+        self.assertEqual((out.v, out.w), (0.0, 0.0))
+
+    def test_work_wins_over_going_to_standby(self):
+        """A robot already driving to its bay must still be able to take a job;
+        otherwise it spends the trip home ignoring work it could have won."""
+        agent = self.make_agent(home=(-12.9, -19.0))
+        # Creep west so the robot is making progress and the stall watchdog,
+        # which is not what this test is about, stays out of the way.
+        for i in range(120):
+            self.clock[0] = i * 0.1
+            agent.set_pose(2.9 - i * 0.02, -18.0, math.pi, 0.2)
+            agent.step(self.clock[0])
+        self.assertEqual(agent.state.mode, "STANDBY")
+
+        agent.submit_task(Task("t0", (2.9, -10.0), (2.9, -6.0)))
+        for i in range(120, 190):
+            self.clock[0] = i * 0.1
+            agent.set_pose(2.9 - i * 0.02, -18.0, math.pi, 0.2)
+            agent.step(self.clock[0])
+        self.assertEqual(agent.state.mode, "TO_PICKUP")
+        self.assertEqual(agent.state.task, "t0")
 
 
 class TestStations(unittest.TestCase):

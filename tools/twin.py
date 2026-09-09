@@ -126,6 +126,7 @@ class Twin:
         for i, (sx, sy, syaw) in enumerate(spawns):
             agent = EdgeAgent(f"amr_{i + 1}", self.plan, limits=lim,
                               charger=charger.xy() if charger else None,
+                              home=(sx, sy),
                               clock=lambda: self.now, policy=policy)
             self.agents.append(agent)
             self.bodies.append(Body(sx, sy, syaw, lim))
@@ -267,6 +268,14 @@ class Twin:
             # finished fewer of them.
             "throughput_per_min": round(completed / max(self.now, 1e-6) * 60.0, 3),
             "complete": completed == len(self.tasks),
+            # When the two arms deliver different numbers of tasks, neither
+            # makespan nor mean task time compares them honestly: the arm that
+            # dropped work looks *faster*, because the jobs it never finished
+            # are the slow ones and they never enter its average. The curve is
+            # the time each successive delivery landed, so the arms can be
+            # compared over the same number of deliveries.
+            "completion_curve": sorted(round(t, 1)
+                                       for t in self.completion_times.values()),
             "policy": self.policy,
             "robots": len(self.agents),
             "tasks": len(self.tasks),
@@ -301,6 +310,24 @@ def print_report(rep):
     print(f"  (ran in {rep['wall_clock_s']} s wall clock)")
 
 
+def equal_work_gain(base, coop):
+    """Percentage reduction in the time to deliver the *same* number of tasks.
+
+    Comparing makespans only works when both arms finished the batch. When one
+    did not, this compares how long each took to reach the delivery count they
+    both reached, which is the like-for-like question and does not reward an
+    arm for abandoning its slowest jobs.
+    """
+    a, b = coop["completion_curve"], base["completion_curve"]
+    k = min(len(a), len(b))
+    if k == 0:
+        return 0.0, "  (neither arm delivered anything)"
+    t_coop, t_base = a[k - 1], b[k - 1]
+    if t_base <= 0:
+        return 0.0, ""
+    return (t_base - t_coop) / t_base * 100.0, ""
+
+
 def run_sweep(args):
     """Measure the gain as a function of how congested the floor is.
 
@@ -324,26 +351,26 @@ def run_sweep(args):
                   f"yield={row[policy]['time_yielding_s']:.0f}s")
         rows.append(row)
 
-    print(f"\n=== {args.scenario}: {args.tasks} tasks, seed {args.seed} ===")
-    print(f"  {'robots':>6} {'stop-and-wait':>14} {'cooperative':>12} "
-          f"{'gain':>8} {'collisions':>11} {'contention':>11}")
+    print(f"\n=== {args.scenario}: {args.tasks} tasks, seed {args.seed}, "
+          f"{args.duration:.0f}s window ===")
+    print(f"  {'robots':>6} {'delivered':>11} {'stop-and-wait':>14} "
+          f"{'cooperative':>12} {'gain':>8} {'collisions':>11} {'contention':>11}")
     for row in rows:
         base, coop = row["stop_and_wait"], row["cooperative"]
         both_done = base["complete"] and coop["complete"]
-        if both_done:
-            gain = ((base["makespan_s"] - coop["makespan_s"]) / base["makespan_s"]
-                    * 100 if base["makespan_s"] else 0.0)
-            metric, note = f"{gain:>7.1f}%", ""
-        else:
-            # Compare what each arm got through in the same wall of time.
-            b, c = base["throughput_per_min"], coop["throughput_per_min"]
-            gain = (c - b) / b * 100 if b else float("inf")
-            metric, note = f"{gain:>7.1f}%", "  (throughput)"
+        gain, note = equal_work_gain(base, coop)
+        metric = f"{gain:>7.1f}%"
+        if not both_done:
+            note = f"  (over {min(base['completed'], coop['completed'])} deliveries)"
         row["gain_pct"] = round(gain, 1)
-        print(f"  {row['robots']:>6} {base['makespan_s']:>13.1f}s "
+        delivered = f"{base['completed']}/{coop['completed']}"
+        print(f"  {row['robots']:>6} {delivered:>11} {base['makespan_s']:>13.1f}s "
               f"{coop['makespan_s']:>11.1f}s {metric} "
               f"{base['robot_collisions']}/{coop['robot_collisions']:>9} "
               f"{base['time_yielding_s']:>10.0f}s{note}")
+    print("  columns pair stop-and-wait/cooperative; a makespan on a run that "
+          "did not\n  deliver everything is censored, so those rows compare "
+          "throughput instead.")
 
     if args.trace:
         args.trace.parent.mkdir(parents=True, exist_ok=True)
@@ -415,24 +442,34 @@ def main():
 
     base, coop = results["stop_and_wait"], results["cooperative"]
     print("\n=== comparison ===")
-    if base["completed"] and coop["completed"]:
-        gain = (base["makespan_s"] - coop["makespan_s"]) / base["makespan_s"] * 100
-        print(f"  makespan   {base['makespan_s']:.1f} s -> {coop['makespan_s']:.1f} s"
-              f"   ({gain:+.1f}%)")
-        print(f"  throughput {base['throughput_per_min']:.2f} -> "
-              f"{coop['throughput_per_min']:.2f} tasks/min")
-        if base["mean_task_s"] and coop["mean_task_s"]:
-            mgain = (base["mean_task_s"] - coop["mean_task_s"]) / base["mean_task_s"] * 100
-            print(f"  mean task  {base['mean_task_s']:.1f} s -> {coop['mean_task_s']:.1f} s"
-                  f"   ({mgain:+.1f}%)")
-        print(f"  collisions {base['robot_collisions']} -> {coop['robot_collisions']}")
-        target = 20.0
-        print(f"\n  success criteria: zero collisions and >= {target:.0f}% faster")
-        ok = coop["robot_collisions"] == 0 and gain >= target
-        print(f"  -> {'MET' if ok else 'NOT MET'}")
-        return 0 if ok else 1
-    print("  one of the arms completed nothing; nothing to compare")
-    return 1
+    if not (base["completed"] and coop["completed"]):
+        print("  one of the arms delivered nothing; nothing to compare")
+        return 1
+
+    k = min(base["completed"], coop["completed"])
+    gain, note = equal_work_gain(base, coop)
+    print(f"  delivered  {base['completed']}/{base['tasks']} -> "
+          f"{coop['completed']}/{coop['tasks']}")
+    print(f"  time to deliver {k} tasks   "
+          f"{base['completion_curve'][k - 1]:.1f} s -> "
+          f"{coop['completion_curve'][k - 1]:.1f} s   ({gain:+.1f}%){note}")
+    if base["complete"] and coop["complete"]:
+        ms = ((base["makespan_s"] - coop["makespan_s"]) / base["makespan_s"] * 100
+              if base["makespan_s"] else 0.0)
+        print(f"  makespan   {base['makespan_s']:.1f} s -> "
+              f"{coop['makespan_s']:.1f} s   ({ms:+.1f}%)")
+    print(f"  throughput {base['throughput_per_min']:.2f} -> "
+          f"{coop['throughput_per_min']:.2f} tasks/min")
+    print(f"  yielding   {base['time_yielding_s']:.0f} s -> "
+          f"{coop['time_yielding_s']:.0f} s of fleet time")
+    print(f"  collisions {base['robot_collisions']} -> {coop['robot_collisions']}")
+
+    target = 20.0
+    print(f"\n  success criteria: zero inter-robot collisions, and at least "
+          f"{target:.0f}% less\n  time to deliver the same work")
+    ok = coop["robot_collisions"] == 0 and gain >= target
+    print(f"  -> {'MET' if ok else 'NOT MET'}")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

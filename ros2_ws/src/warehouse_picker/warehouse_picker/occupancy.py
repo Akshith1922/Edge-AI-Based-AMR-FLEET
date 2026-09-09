@@ -110,19 +110,40 @@ class GridMap:
             grid.clearance_cm = bytearray(base64.b64decode(d["clearance_cm"]))
         return grid
 
-    def free_width(self, x, y):
-        """Metres of open floor around a world point, from the source map.
+    def free_width(self, x, y, probe=1.25):
+        """Width of the corridor a world point sits in, in metres.
 
-        Two robots need roughly ``2 * (radius + margin)`` to pass; anywhere
-        this returns less than that is single-file and has to be coordinated
-        rather than merely avoided.
+        Two robots need roughly ``2 * (radius + margin)`` to pass; anywhere this
+        returns less than that is single-file and has to be coordinated rather
+        than merely avoided.
+
+        The width is taken from the *widest* clearance within `probe` metres,
+        not from the clearance at the point itself. Those differ whenever a
+        robot is not in the middle of the aisle -- a robot hugging one rack in a
+        4 m aisle has barely 0.6 m of clearance, and reading that as the aisle
+        width declares a road two robots can comfortably share to be single-file.
+        Everything downstream then treats ordinary passing traffic as a
+        head-on to be given way to.
         """
         if self.clearance_cm is None:
             return self.clearance(x, y) * 2.0
         col, row = self.world_to_grid(x, y)
         if not self.in_bounds(col, row):
             return 0.0
-        return self.clearance_cm[row * self.w + col] / 100.0 * 2.0
+        reach = max(1, int(probe / self.resolution))
+        best = 0
+        for dr in range(-reach, reach + 1):
+            r = row + dr
+            if not (0 <= r < self.h):
+                continue
+            base = r * self.w
+            for dc in range(-reach, reach + 1):
+                c = col + dc
+                if 0 <= c < self.w and dc * dc + dr * dr <= reach * reach:
+                    v = self.clearance_cm[base + c]
+                    if v > best:
+                        best = v
+        return best / 100.0 * 2.0
 
     def connected_regions(self):
         """Free-space components, largest first, as lists of ``(col, row)``."""

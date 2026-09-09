@@ -21,8 +21,10 @@ real shop floor that is a DDS discovery-server or a Zenoh bridge, and it is a
 deployment concern rather than a change to any of this code.
 """
 
+import json
 import math
 import os
+from pathlib import Path
 
 import rclpy
 from geometry_msgs.msg import Twist
@@ -64,6 +66,7 @@ class EdgeFleetAgentNode(Node):
 
         self.declare_parameter("robot_id", "amr_1")
         self.declare_parameter("map_path", "")
+        self.declare_parameter("layout_path", "")
         self.declare_parameter("policy", "cooperative")
         self.declare_parameter("max_speed", 0.8)
         self.declare_parameter("battery", 100.0)
@@ -79,6 +82,7 @@ class EdgeFleetAgentNode(Node):
         self.agent = EdgeAgent(
             self.robot_id, grid, limits=limits,
             charger=charger.xy() if charger else None,
+            home=self._home_from_layout(),
             battery=float(self.get_parameter("battery").value),
             clock=self._now,
             policy=self.get_parameter("policy").value)
@@ -101,6 +105,22 @@ class EdgeFleetAgentNode(Node):
             f"[{self.robot_id}] edge agent online: {grid.w}x{grid.h} map @ "
             f"{grid.resolution} m, policy={self.agent.policy}, "
             f"charger={'yes' if charger else 'none'}")
+
+    def _home_from_layout(self):
+        """Standby bay: this robot's spawn pose, read from the world layout."""
+        path = self.get_parameter("layout_path").value
+        if not path:
+            from ament_index_python.packages import get_package_share_directory
+            path = os.path.join(get_package_share_directory("warehouse_picker"),
+                                "config", "warehouse_layout.json")
+        try:
+            layout = json.loads(Path(path).read_text())
+        except (OSError, ValueError):
+            return None
+        for robot in layout.get("robots", []):
+            if robot.get("name") == self.robot_id:
+                return (robot["x"], robot["y"])
+        return None
 
     def _default_map(self):
         from ament_index_python.packages import get_package_share_directory

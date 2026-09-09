@@ -25,14 +25,16 @@ has been asked to do.
 
 import math
 import time
+from collections import deque
 
 from .allocation import TaskPool, route_cost, UNREACHABLE
 from .navigation import (PEER_MARGIN, AStar, Limits, LocalPlanner, Obstacle,
                          PathTracker, scan_to_obstacles, wrap)
-from .protocol import (CLAIM_HORIZON_M, Coordinator, FleetState, PeerTable,
-                       AGING_RATE, BASE_PRIORITY, STALL_SPEED)
+from .protocol import (AGING_RATE, BASE_PRIORITY, CLAIM_HORIZON_M,
+                       Coordinator, FleetState, PeerTable, rank_key)
 
 IDLE = "IDLE"
+STANDBY = "STANDBY"
 TO_PICKUP = "TO_PICKUP"
 TO_DROPOFF = "TO_DROPOFF"
 TO_CHARGER = "TO_CHARGER"
@@ -59,6 +61,32 @@ BLOCK_TTL_S = 45.0
 BID_INTERVAL_S = 1.0
 BID_CANDIDATES = 5
 
+# Liveness backstop. The coordination layer resolves the deadlocks it can name;
+# this catches the ones it cannot. A robot that has a goal and has not moved for
+# this long backs off and replans regardless of *why* it is stuck -- a peer
+# parked across its nose, a pallet the map does not know about, a pair of robots
+# each politely waiting for the other. Without it, one unnamed stall is
+# permanent: the fleet has no supervisor to come and untangle it.
+STALL_ESCAPE_S = 6.0
+STALL_ESCAPE_DURATION_S = 2.5
+STALL_CLUSTER_M = 3.0
+# How far back to look for progress, and how little counts as none.
+STALL_WINDOW_S = 8.0
+STALL_PROGRESS_M = 0.35
+# Three robots that all back off at once stay exactly as jammed as they were,
+# just further apart. After this many failed escapes the goal itself is the
+# problem -- typically a pick face another robot is parked on -- so the task
+# goes back to the pool for someone better placed to take.
+ESCAPES_BEFORE_RELEASING = 3
+
+# A robot with nothing to do stops exactly where it delivered, which is a pick
+# face or a drop bay -- the two busiest places on the floor. It then sits there
+# as an obstacle nobody can negotiate with: it never yields, because it has no
+# reason to, and every other robot has to route around it. Sending idle robots
+# back to their standby bay costs a little battery and removes a whole class of
+# congestion that no amount of coordination between the *working* robots can fix.
+STANDBY_AFTER_S = 3.0
+
 
 class AgentOutput:
     __slots__ = ("v", "w", "mesh", "tasks", "telemetry")
@@ -70,13 +98,14 @@ class AgentOutput:
 
 
 class EdgeAgent:
-    def __init__(self, robot_id, grid, limits=None, charger=None,
+    def __init__(self, robot_id, grid, limits=None, charger=None, home=None,
                  battery=100.0, clock=time.monotonic, policy="cooperative"):
         self.id = robot_id
         self.grid = grid
         self.lim = limits or Limits()
         self.clock = clock
         self.charger = charger
+        self.home = home            # standby bay; usually the spawn pose
 
         self.planner = AStar(grid)
         self.local = LocalPlanner(grid, self.lim)
@@ -98,10 +127,13 @@ class EdgeAgent:
         self._scan_time = -1e9
         self._last_plan = -1e9
         self._plan_goal = None
-        self._stalled_since = None
         self._service_until = 0.0
         self._blocked = {}            # cell -> expiry time
         self._block_since = None
+        self._track_history = deque()
+        self._escape_until = 0.0
+        self._escapes_here = 0
+        self._idle_since = None
         self._last_bid = -1e9
         self._last_step = None
         self._last_xy = None
@@ -113,6 +145,7 @@ class EdgeAgent:
         self.time_yielding = 0.0
         self.time_blocked = 0.0
         self.replans = 0
+        self.stall_escapes = 0
 
     # -- inputs ------------------------------------------------------------
 
@@ -155,6 +188,23 @@ class EdgeAgent:
         if not self.have_pose:
             return self._output(0.0, 0.0, now, "waiting for odometry")
 
+        # Stalling is measured here, at the top, and by *displacement* rather
+        # than by speed. Two reasons, both learned the hard way:
+        #
+        # Doing it at the bottom of the tracking branch means every early return
+        # -- loading, retreating, no route -- skips it, so a robot wedged inside
+        # one of those branches reports it has never stalled and neither the
+        # deadlock detector nor the watchdog below ever fires.
+        #
+        # And a robot shuffling back and forth in a jam repeatedly exceeds any
+        # speed threshold while going nowhere at all, so an instantaneous-speed
+        # test resets on its own twitching and the stall never registers. What
+        # matters is whether the robot has been anywhere, not whether its wheels
+        # turned.
+        self._track_history.append((now, self.x, self.y))
+        while len(self._track_history) > 2 and now - self._track_history[0][0] > STALL_WINDOW_S:
+            self._track_history.popleft()
+
         lost = self.peers.tick(now)
         for pid in lost:
             # A silent peer's work is nobody's until someone bids for it again.
@@ -189,7 +239,7 @@ class EdgeAgent:
         # --- decide with the fleet, then plan against that decision --------
         self._publish_claim(now)
         peers = self.peers.alive()
-        stalled_for = 0.0 if self._stalled_since is None else now - self._stalled_since
+        stalled_for = self._stalled_for(now)
         decision = self.coord.decide(self.state, peers, now,
                                      stalled_for=stalled_for)
         self._decision_reason = decision.reason
@@ -207,10 +257,34 @@ class EdgeAgent:
 
         self._maybe_replan(goal, penalties, now)
 
+        # --- liveness backstop --------------------------------------------
+        if now < self._escape_until:
+            self.state.retreating = True
+            self._decision_reason = "escaping a stall"
+            return self._drive_escape(now, peers, self._decision_reason)
+        if stalled_for > STALL_ESCAPE_S:
+            if not self._my_turn_to_escape(peers):
+                # Someone else in this knot goes first. All of us backing off
+                # together leaves us exactly as jammed, only further apart.
+                self._decision_reason = "stalled, waiting my turn to back off"
+                return self._output(0.0, 0.0, now, self._decision_reason)
+            self._escape_until = now + STALL_ESCAPE_DURATION_S
+            self._track_history.clear()
+            self.coord.abandon_retreat()
+            self.state.priority += 1.0        # win the next contest outright
+            self._plan_goal = None            # and take a different route
+            self.stall_escapes += 1
+            self._escapes_here += 1
+            self.state.retreating = True
+            if self._escapes_here >= ESCAPES_BEFORE_RELEASING:
+                self._give_up_on_goal(now)
+            self._decision_reason = "stalled, backing off"
+            return self._drive_escape(now, peers, self._decision_reason)
+
         # --- retreat overrides path following ------------------------------
         if decision.retreat_to is not None:
             self.state.retreating = True
-            return self._drive_retreat(decision.retreat_to, now)
+            return self._drive_retreat(decision.retreat_to, now, peers)
         self.state.retreating = False
 
         self.tracker.lookahead = self._lookahead_for(self.v)
@@ -224,7 +298,7 @@ class EdgeAgent:
         v_cmd, w_cmd = self.local.compute(self.x, self.y, self.yaw, self.v, self.w,
                                           carrot, obstacles, decision.speed_cap)
 
-        self._track_stall(v_cmd, now, dt, decision)
+        self._track_stall(now, dt, decision)
         return self._output(v_cmd, w_cmd, now, self._decision_reason)
 
     # -- pieces ------------------------------------------------------------
@@ -310,7 +384,7 @@ class EdgeAgent:
         self.state.claim = cells
         self.state.eta = [i * self.grid.resolution / speed for i in range(len(cells))]
 
-    def _drive_retreat(self, target, now):
+    def _drive_retreat(self, target, now, peers):
         """Reverse towards a passing bay without turning round to do it."""
         dx, dy = target[0] - self.x, target[1] - self.y
         dist = math.hypot(dx, dy)
@@ -320,17 +394,102 @@ class EdgeAgent:
         # The bay is behind us, so the steering error is measured against the
         # robot's *rear*: driving backwards, a positive error steers the other way.
         rear_err = wrap(bearing - math.pi)
-        v = max(self.lim.v_min, -0.25)
         w = max(-0.6, min(0.6, -1.2 * rear_err))
+        v = max(self.lim.v_min, -0.25)
+        if not self._reverse_is_clear(peers):
+            return self._output(0.0, 0.0, now, "would reverse, but it is not clear")
         return self._output(v, w, now, "retreating")
 
-    def _track_stall(self, v_cmd, now, dt, decision):
-        moving = abs(self.v) > STALL_SPEED or abs(v_cmd) > STALL_SPEED
-        if moving:
-            self._stalled_since = None
-        elif self._stalled_since is None:
-            self._stalled_since = now
+    def _stalled_for(self, now):
+        """Seconds since the robot last made real progress across the floor."""
+        history = self._track_history
+        if len(history) < 2:
+            return 0.0
+        span = now - history[0][0]
+        if span < 1.0:
+            return 0.0
+        moved = max(math.hypot(x - self.x, y - self.y) for (_t, x, y) in history)
+        return span if moved < STALL_PROGRESS_M else 0.0
 
+    def _my_turn_to_escape(self, peers):
+        """Exactly one robot in a knot backs off at a time.
+
+        Every robot applies the same rule to the same broadcast state, so the
+        lowest-ranked stalled robot in the cluster goes and the rest hold --
+        without a round trip, and without the risk of all of them moving at
+        once and re-forming the jam a metre away.
+        """
+        mine = rank_key({"priority": self.state.priority,
+                         "lamport": self.state.lamport, "id": self.id})
+        for peer in peers:
+            if not peer.get("stalled"):
+                continue
+            if math.hypot(peer["x"] - self.x, peer["y"] - self.y) > STALL_CLUSTER_M:
+                continue
+            if rank_key(peer) < mine:
+                return False
+        return True
+
+    def _give_up_on_goal(self, now):
+        """Hand the task back. Somebody better placed can have it.
+
+        This is the re-allocation half of dynamic re-routing: when a robot
+        cannot reach a pick face -- because another robot is parked on it, or an
+        aisle is blocked -- the answer is not to keep trying, it is to let the
+        fleet reassign the job.
+        """
+        task = self.pool.assigned_to(self.id, now)
+        if task is None:
+            return
+        self.pool.release(task.id)
+        self._last_bid = now + 4.0        # do not immediately re-bid for it
+        self._escapes_here = 0
+        self.state.mode = IDLE
+        self.state.task = None
+        self.tracker.clear()
+        self._plan_goal = None
+
+    def _drive_escape(self, now, peers, reason):
+        """Back off far enough for whatever is in the way to resolve itself."""
+        if not self._reverse_is_clear(peers):
+            # Cannot reverse either. Rotate on the spot: it changes what the
+            # lidar can see and what the local planner can reach, and it is the
+            # one motion that is always safe on an inflated map.
+            return self._output(0.0, 0.5, now, f"{reason} (turning, rear blocked)")
+        return self._output(max(self.lim.v_min, -0.22), 0.0, now, reason)
+
+    def _reverse_is_clear(self, peers, distance=0.9):
+        """Is there room behind? Reversing is blind, so this is checked here.
+
+        The local planner does not vet these manoeuvres -- they deliberately
+        ignore the path -- so the collision check has to happen somewhere, and
+        this is it.
+        """
+        need = self.lim.radius + self.lim.safety
+        for d in (0.3, 0.6, distance):
+            bx = self.x - d * math.cos(self.yaw)
+            by = self.y - d * math.sin(self.yaw)
+            if self.grid.at(*self.grid.world_to_grid(bx, by)):
+                return False
+            for peer in peers:
+                if math.hypot(peer["x"] - bx, peer["y"] - by) < need + self.lim.radius:
+                    return False
+        if self._scan:
+            ranges, a_min, a_inc, r_max = self._scan
+            stride = max(1, len(ranges) // 90)
+            for ob in scan_to_obstacles(self.x, self.y, self.yaw, ranges,
+                                        a_min, a_inc, r_max, stride=stride):
+                dx, dy = ob.x - self.x, ob.y - self.y
+                behind = -(dx * math.cos(self.yaw) + dy * math.sin(self.yaw))
+                if 0 < behind < distance:
+                    lateral = abs(-dx * math.sin(self.yaw) + dy * math.cos(self.yaw))
+                    if lateral < need:
+                        return False
+        return True
+
+
+
+    def _track_stall(self, now, dt, decision):
         if self.local.last_reason == "blocked" and decision.speed_cap != 0.0:
             self.time_blocked += dt
             if self._block_since is None:
@@ -390,7 +549,11 @@ class EdgeAgent:
             self._abandon_task("claim lost to a lower id")
 
         won = self.pool.settle(now)
-        if won is not None and self.pool.mine is None and self.state.mode == IDLE:
+        if (won is not None and self.pool.mine is None
+                and self.state.mode in (IDLE, STANDBY)):
+            # A robot on its way back to standby is still available. Requiring
+            # it to arrive first would leave it driving away from work it has
+            # already won.
             self.pool.take(won)
 
         if self.state.mode in (TO_CHARGER, CHARGING):
@@ -409,10 +572,18 @@ class EdgeAgent:
         if mine is None:
             if self.state.mode in (TO_PICKUP, TO_DROPOFF):
                 self._abandon_task("task released")
+            if self.state.mode in (IDLE, STANDBY) and self.home:
+                if self._idle_since is None:
+                    self._idle_since = now
+                elif (now - self._idle_since > STANDBY_AFTER_S
+                        and self.state.mode == IDLE):
+                    self.state.mode = STANDBY
+                    self._plan_goal = None
             return
 
+        self._idle_since = None
         self.state.task = mine.id
-        if self.state.mode == IDLE:
+        if self.state.mode in (IDLE, STANDBY):
             self.state.mode = TO_PICKUP
             self._plan_goal = None
         return
@@ -435,7 +606,7 @@ class EdgeAgent:
         auction settles in under a second either way -- and leaves the control
         loop its budget.
         """
-        if self.state.mode != IDLE or self.pool.mine is not None:
+        if self.state.mode not in (IDLE, STANDBY) or self.pool.mine is not None:
             return
         if now - self._last_bid < BID_INTERVAL_S:
             return
@@ -463,6 +634,8 @@ class EdgeAgent:
             return self.charger
         if mode == CHARGING:
             return None
+        if mode == STANDBY:
+            return self.home
         task = self.pool.assigned_to(self.id, now)
         if task is None:
             return None
@@ -474,12 +647,15 @@ class EdgeAgent:
 
     def _on_goal_reached(self, now):
         mode = self.state.mode
+        self._escapes_here = 0
         self.tracker.clear()
         self._plan_goal = None
         if mode == TO_CHARGER:
             self.state.mode = CHARGING
             return
-        if mode == CHARGING:
+        if mode in (CHARGING, STANDBY):
+            self.state.mode = IDLE
+            self._idle_since = None
             return
         task = self.pool.assigned_to(self.id, now)
         if task is None:
@@ -504,6 +680,7 @@ class EdgeAgent:
         self.state.seq += 1
         self.state.lamport = self.peers.lamport = self.peers.lamport + 1
         self.state.stamp = now
+        self.state.stalled = self._stalled_for(now) > STALL_ESCAPE_S * 0.5
         self.state.x, self.state.y, self.state.yaw = self.x, self.y, self.yaw
         self.state.v, self.state.w = v, w
 
@@ -522,6 +699,7 @@ class EdgeAgent:
             "distance": round(self.distance_travelled, 2),
             "tasks_done": self.tasks_done,
             "replans": self.replans,
+            "stall_escapes": self.stall_escapes,
         }
         return AgentOutput(v, w, self.state.to_json(),
                            self.pool.announce(now), telemetry)
