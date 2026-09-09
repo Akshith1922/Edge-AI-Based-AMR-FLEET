@@ -34,14 +34,19 @@ body{margin:0;background:var(--bg);color:var(--fg);
 header{padding:16px 22px;border-bottom:1px solid var(--line)}
 h1{font-size:17px;margin:0 0 4px;letter-spacing:.01em}
 .sub{color:var(--dim);font-size:12.5px}
-main{display:grid;grid-template-columns:minmax(300px,440px) 1fr;gap:18px;padding:18px;
+main{display:grid;grid-template-columns:auto minmax(320px,1fr);gap:18px;padding:18px;
      align-items:start}
 @media(max-width:880px){main{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
 .card h2{font-size:11.5px;text-transform:uppercase;letter-spacing:.09em;
          color:var(--dim);margin:0 0 12px;font-weight:600}
-#stage{position:relative;width:100%;aspect-ratio:__ASPECT__;background:#f7f7f4;
+/* The warehouse is 30 x 50 m, so the map is tall and narrow. Size it off the
+   viewport height and let the width follow, otherwise the south end of the
+   building falls below the fold on a laptop and the demo starts by scrolling. */
+#stage{position:relative;height:min(72vh,700px);aspect-ratio:__ASPECT__;
+       max-width:100%;margin:0 auto;background:#f7f7f4;
        border-radius:8px;overflow:hidden}
+@media(max-width:880px){#stage{height:auto;width:min(100%,340px)}}
 #stage img{width:100%;height:100%;display:block}
 #stage svg{position:absolute;inset:0;width:100%;height:100%}
 .controls{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap}
@@ -99,6 +104,7 @@ const sy = y => (B[3] - y) / (B[3] - B[1]) * VH;
 const frames = DATA.frames, ov = document.getElementById('ov');
 let i = 0, playing = true, speed = 1, acc = 0;
 
+
 document.getElementById('scrub').max = frames.length - 1;
 document.getElementById('stats').innerHTML = Object.entries(DATA.stats)
   .map(([k,v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join('');
@@ -142,16 +148,17 @@ function draw(){
   document.getElementById('scrub').value = i;
 }
 
-let last = performance.now();
-function loop(now){
-  const dt = (now - last) / 1000; last = now;
-  if (playing) {
-    acc += dt * speed;
-    const step = DATA.frame_dt || 0.5;
-    while (acc >= step) { acc -= step; i = (i + 1) % frames.length; }
-    draw();
-  }
-  requestAnimationFrame(loop);
+// setInterval rather than requestAnimationFrame: playback runs at a fixed
+// simulated rate, not at the display's refresh rate, and this keeps advancing
+// in a background tab so a demo left running does not silently freeze.
+const TICK_MS = 50;
+function loop(){
+  if (!playing) return;
+  acc += (TICK_MS / 1000) * speed;
+  const step = DATA.frame_dt || 0.5;
+  let moved = false;
+  while (acc >= step) { acc -= step; i = (i + 1) % frames.length; moved = true; }
+  if (moved) draw();
 }
 document.getElementById('play').onclick = e => {
   playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play';
@@ -163,7 +170,7 @@ document.getElementById('scrub').oninput = e => {
   i = +e.target.value; playing = false;
   document.getElementById('play').textContent = 'Play'; draw();
 };
-draw(); requestAnimationFrame(loop);
+draw(); setInterval(loop, TICK_MS);
 </script></body></html>
 """
 
