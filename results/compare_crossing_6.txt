@@ -3,14 +3,14 @@
   policy            stop_and_wait
   robots / tasks    6 / 12
   completed         12/12
-  makespan          262.0 s
-  throughput        2.748 tasks/min
-  mean task time    113.2 s
+  makespan          231.1 s
+  throughput        3.116 tasks/min
+  mean task time    115.9 s
   robot collisions  0
   wall contacts     0
-  distance driven   583.4 m
-  time yielding     189.7 s
-  replans           673
-  (ran in 74.9 s wall clock)
+  distance driven   632.3 m
+  time yielding     159.4 s
+  replans           732
+  (ran in 73.1 s wall clock)
 
 === cooperative ===

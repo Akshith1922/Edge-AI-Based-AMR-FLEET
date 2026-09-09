@@ -22,6 +22,7 @@ ros2 launch warehouse_picker fleet_warehouse.launch.py     # then open :8080
 | The patrol route crossed racks | A hard-coded ±6/±5 rectangle, which passes straight through `shelf_1` at (−4.4, 5.3) and `shelf_4` at (5.6, 5.3) | Routes come from A* over a map built from the racks' own collision geometry |
 | Dashboard permanently blank | It subscribed to `/fleet/p2p_mesh` expecting `target_x` / `battery`; the agent published to `/fleet/heartbeat` with neither | Both ends encode and decode with `protocol.FleetState`, so the schema cannot drift |
 | Robots froze around each other | Conflict resolution was a hard stop for any peer within 2 m, on a fixed id priority | Yield escalates reroute → throttle → retreat, and priority ages upward while blocked |
+| Robots stopped on the pick faces | Nothing ever told an idle robot to move | Idle robots return to a standby bay |
 | World only ran on one Gazebo version | `ignition::gazebo::systems::*` plugin names hard-coded at world level | No world-level plugins; Gazebo loads its own version-correct defaults |
 
 ---
@@ -140,10 +141,14 @@ escalating ways and normally never reaches the third.
 1. **Reroute.** A peer's claimed cells become *expensive* to plan through, not
    impassable. If another aisle is within the detour bound the yielding robot
    goes around and neither robot slows down at all.
-2. **Throttle.** With no reasonable detour, the yielding robot caps its speed to
-   hold a time gap behind the peer. It keeps rolling, so it does not pay the
-   decelerate-and-reaccelerate cost, and it is already moving when the corridor
-   clears.
+2. **Throttle.** In a single-file corridor, the yielding robot caps its
+   speed to hold a time gap behind the peer. It keeps rolling, so it does
+   not pay the decelerate-and-reaccelerate cost, and it is already moving
+   when the corridor clears. Only in a corridor: on open floor the local
+   planner already holds a safe gap from real geometry rather than from a
+   broadcast position a cycle old, and an earlier version that threw a
+   speed cap at every claim overlap anywhere spent four times longer
+   yielding than the uncoordinated control arm while delivering less.
 3. **Retreat.** Only for a genuine head-on in an aisle too narrow to pass in:
    the lower-ranked robot reverses to the nearest bay wide enough, which it
    knows from the clearance layer carried in the planning grid.
@@ -152,10 +157,62 @@ Rank is `(priority, −lamport, id)` compared as a tuple, and priority **ages
 upward while a robot is yielding**, so a robot that keeps losing eventually
 wins. Starvation is bounded rather than merely unlikely.
 
+Where there *is* room for two, both robots simply move over to an agreed side
+and neither slows. That only works while there is still room to move over into,
+though: once two robots are inside each other's clearance envelope no aim-point
+nudge can help, because the obstacle is the other robot. Below 1.9 m someone
+gives way instead.
+
 Deadlock is caught by walking the wait-for chain published in each heartbeat.
 Every robot in a cycle sees the same cycle and computes the same loser, so
 exactly one backs off — no negotiation round trip, and no chance of all of them
 backing off at once.
+
+### Liveness: the stalls the protocol cannot name
+
+Coordination resolves the deadlocks it can identify. The interesting failures
+are the ones it cannot, and on a real floor those are the majority: a peer
+parked across a nose, a pallet the map does not know about, two robots each
+politely waiting for the other. With no supervisor to come and untangle them,
+one unnamed stall is permanent, so there is a backstop underneath everything
+else.
+
+A robot that has a goal and has not *been anywhere* for 8 seconds backs off and
+replans, whatever the reason. Three details make that work rather than make
+things worse:
+
+* **Stalling is measured by displacement, not speed.** A robot shuffling back
+  and forth in a jam clears any speed threshold repeatedly while going nowhere,
+  so a speed test resets on its own twitching and the stall never registers.
+* **It is measured at the top of the control loop.** Checking it at the end of
+  the path-following branch means every early return (loading, retreating, no
+  route) skips it, and a robot wedged inside one of those branches reports that
+  it has never stalled.
+* **One robot in a knot backs off at a time.** Three robots that all reverse at
+  once are exactly as jammed, only further apart. Robots broadcast whether they
+  are stalled; the lowest-ranked stalled robot in the cluster goes and the rest
+  hold, by the same total order used everywhere else.
+
+After three failed escapes the goal itself is the problem, usually a pick face
+another robot is parked on, so the task goes back to the pool for whoever is
+better placed. That is the re-allocation half of dynamic re-routing, triggered
+by the robot's own experience rather than by anything telling it the aisle is
+blocked.
+
+### Idle robots go to standby
+
+A robot with nothing to do used to stop exactly where it delivered, which is a
+pick face or a drop bay: the two busiest places on the floor. It then sat there
+as an obstacle nobody could negotiate with, because it never yields, and every
+other robot had to route around it for the rest of the shift. Idle robots now
+return to their standby bay, and can accept work on the way there.
+
+This is worth more than it sounds. Adding it took the fleet from moving 41% of
+the time to 63%, and dropped the share of decisions spent in stall-recovery
+machinery from 27% to 8%: a bigger effect than any change to the coordination
+rules themselves, because it removes congestion that no amount of coordination
+*between the working robots* could have fixed.
+
 
 ### Task allocation
 
