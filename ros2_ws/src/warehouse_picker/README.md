@@ -107,6 +107,20 @@ None of `agent_core`, `navigation`, `protocol`, `allocation`, `occupancy` or
 into four inputs and one output. That is what lets the same code run under the
 headless twin and under `python3 -m unittest` with no simulator at all.
 
+### The dashboard
+
+![The fleet dashboard](../../../results/fleet_dashboard.png)
+
+Every robot's position, route, goal, battery, mode and — the part that makes it
+useful while something is going wrong — the reason it is doing what it is doing,
+in words. The Coordination panel logs transitions rather than state: a robot
+starting to give way, finishing a delivery, reporting a blocked aisle.
+
+It subscribes to the same `/fleet/mesh` broadcast the robots send each other,
+so it is a *listener on* the mesh rather than a part of it. Start it, stop it,
+or run it on three laptops at once and the fleet does not notice.
+
+
 ### Nodes and topics
 
 | Node | Subscribes | Publishes |
