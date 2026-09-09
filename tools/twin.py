@@ -51,12 +51,13 @@ CONTROL_HZ = 10.0
 class Body:
     """Differential-drive kinematics with first-order actuator lag."""
 
-    __slots__ = ("x", "y", "yaw", "v", "w", "lim")
+    __slots__ = ("x", "y", "yaw", "v", "w", "lim", "radius")
 
     def __init__(self, x, y, yaw, lim):
         self.x, self.y, self.yaw = x, y, yaw
         self.v = self.w = 0.0
         self.lim = lim
+        self.radius = ROBOT_RADIUS
 
     def apply(self, v_cmd, w_cmd, dt):
         lim = self.lim
@@ -69,23 +70,49 @@ class Body:
         self.y += self.v * math.sin(self.yaw) * dt
 
 
-def simulate_scan(grid, body, others, rng=None):
-    """Ray-cast the static map, then clip each beam on any robot in its way."""
+class Obstruction:
+    """Something in an aisle that the map does not know about.
+
+    A dropped pallet, a stopped forklift, a spill. It exists only in the lidar
+    and in the collision check -- never in the occupancy grid -- so the fleet
+    has to *discover* it, agree it is there, and route around it. That is the
+    whole point: a blockage the planner already knows about is not a test of
+    anything.
+    """
+
+    __slots__ = ("x", "y", "radius", "appears_at", "label")
+
+    def __init__(self, x, y, radius, appears_at=0.0, label=""):
+        self.x, self.y, self.radius = x, y, radius
+        self.appears_at = appears_at
+        self.label = label or f"pallet at ({x:.1f}, {y:.1f})"
+
+    def present(self, now):
+        return now >= self.appears_at
+
+
+def simulate_scan(grid, body, circles, rng=None):
+    """Ray-cast the static map, then clip each beam on anything in its way.
+
+    `circles` are the other robots and any unmapped obstructions, as objects
+    with `.x`, `.y` and `.radius`.
+    """
     ranges = []
     for i in range(SCAN_BEAMS):
         a = -SCAN_FOV + 2 * SCAN_FOV * i / (SCAN_BEAMS - 1)
         theta = body.yaw + a
         r = grid.raycast(body.x, body.y, theta, SCAN_RANGE)
         dx, dy = math.cos(theta), math.sin(theta)
-        for ob in others:
+        for ob in circles:
+            radius = getattr(ob, "radius", ROBOT_RADIUS)
             ox, oy = ob.x - body.x, ob.y - body.y
             along = ox * dx + oy * dy
-            if along <= 0 or along - ROBOT_RADIUS > r:
+            if along <= 0 or along - radius > r:
                 continue
             perp2 = ox * ox + oy * oy - along * along
-            if perp2 > ROBOT_RADIUS * ROBOT_RADIUS:
+            if perp2 > radius * radius:
                 continue
-            hit = along - math.sqrt(ROBOT_RADIUS * ROBOT_RADIUS - perp2)
+            hit = along - math.sqrt(radius * radius - perp2)
             if 0 < hit < r:
                 r = hit
         if rng is not None and r < SCAN_RANGE:
@@ -132,9 +159,11 @@ class Twin:
             self.bodies.append(Body(sx, sy, syaw, lim))
 
         self.tasks = self._make_tasks(tasks)
+        self.obstructions = self._make_obstructions()
         self.now = 0.0
         self.collisions = []
         self.wall_hits = []
+        self.obstruction_hits = []
         self.completion_times = {}
         self.trace = [] if trace else None
 
@@ -158,7 +187,16 @@ class Twin:
         south = [s for s in self.stations if s.y <= 2.0]
         out = []
         for i in range(count):
-            if self.scenario == "rush_hour" and north and self.docks:
+            if self.scenario == "blocked_aisle" and self.stations:
+                # Force traffic up and down the southern aisles, which is where
+                # the blockage lands.
+                deep = [s for s in self.stations if s.y < -6.0] or self.stations
+                pick = rng.choice(deep)
+                drop = (self.docks[i % len(self.docks)] if self.docks
+                        else rng.choice(self.stations))
+                if i % 2:
+                    pick, drop = drop, pick
+            elif self.scenario == "rush_hour" and north and self.docks:
                 pick = rng.choice(north)
                 drop = self.docks[i % len(self.docks)]
             elif north and south:
@@ -170,6 +208,27 @@ class Twin:
                             priority=1.0, created=0.0,
                             label=f"{pick.name} -> {drop.name}"))
         return out
+
+    def _make_obstructions(self):
+        """The `blocked_aisle` scenario's chokepoint.
+
+        Every aisle in this warehouse is wide enough for two Tugbots abreast --
+        `tools/twin.py --measure-corridors` reports not one single-file cell on
+        the whole floor -- so nothing in the layout itself forces robots to take
+        turns. A pallet stack dropped part-way across one of the two southern
+        aisles does: it leaves a 1.2 m gap, which one robot fits through and two
+        do not, and it appears after the run has started so the fleet has to
+        find it rather than plan around it from the outset.
+        """
+        if self.scenario != "blocked_aisle":
+            return []
+        # The west aisle runs x in [-4.77, -0.97]. A 1.3 m pallet stack against
+        # its western rack leaves x in [-2.17, -0.97] open: 1.2 m.
+        return [Obstruction(-3.47, -12.0, 1.30, appears_at=45.0,
+                            label="pallet stack across the west aisle")]
+
+    def live_obstructions(self):
+        return [o for o in self.obstructions if o.present(self.now)]
 
     # -- the loop ----------------------------------------------------------
 
@@ -185,9 +244,10 @@ class Twin:
         for step in range(steps):
             self.now = step * self.dt
 
+            hazards = self.live_obstructions()
             meshes, task_msgs = [], []
             for agent, body in zip(self.agents, self.bodies):
-                others = [b for b in self.bodies if b is not body]
+                others = [b for b in self.bodies if b is not body] + hazards
                 agent.set_pose(body.x, body.y, body.yaw, body.v, body.w)
                 agent.set_scan(*simulate_scan(self.fine, body, others, self.rng),
                                now=self.now)
@@ -245,10 +305,15 @@ class Twin:
 
     def _check_collisions(self):
         touch = 2 * ROBOT_RADIUS
+        hazards = self.live_obstructions()
         for i in range(len(self.bodies)):
             bi = self.bodies[i]
             if self.fine.at(*self.fine.world_to_grid(bi.x, bi.y)):
                 self.wall_hits.append((round(self.now, 2), self.agents[i].id))
+            for ob in hazards:
+                if math.hypot(bi.x - ob.x, bi.y - ob.y) < ROBOT_RADIUS + ob.radius:
+                    self.obstruction_hits.append((round(self.now, 2),
+                                                  self.agents[i].id, ob.label))
             for j in range(i + 1, len(self.bodies)):
                 bj = self.bodies[j]
                 if math.hypot(bi.x - bj.x, bi.y - bj.y) < touch:
@@ -286,6 +351,7 @@ class Twin:
             "sim_time_s": round(self.now, 1),
             "robot_collisions": len(self.collisions),
             "wall_contacts": len(self.wall_hits),
+            "obstruction_contacts": len(self.obstruction_hits),
             "distance_m": round(sum(a.distance_travelled for a in self.agents), 1),
             "time_yielding_s": round(sum(a.time_yielding for a in self.agents), 1),
             "replans": sum(a.replans for a in self.agents),
@@ -304,6 +370,8 @@ def print_report(rep):
     print(f"  mean task time    {rep['mean_task_s']} s")
     print(f"  robot collisions  {rep['robot_collisions']}")
     print(f"  wall contacts     {rep['wall_contacts']}")
+    if rep.get("obstruction_contacts") is not None:
+        print(f"  hit the blockage  {rep['obstruction_contacts']}")
     print(f"  distance driven   {rep['distance_m']} m")
     print(f"  time yielding     {rep['time_yielding_s']} s")
     print(f"  replans           {rep['replans']}")
@@ -326,6 +394,46 @@ def equal_work_gain(base, coop):
     if t_base <= 0:
         return 0.0, ""
     return (t_base - t_coop) / t_base * 100.0, ""
+
+
+def measure_corridors():
+    """Report how much of the floor is too narrow for two robots to pass.
+
+    Worth running before believing any coordination benchmark. A warehouse
+    whose aisles all take two robots abreast has no chokepoints, so corridor
+    coordination -- give way, throttle, passing bays -- has nothing to do, and
+    a comparison against an uncoordinated fleet will come out roughly level
+    however good the protocol is. That is a fact about the building, not about
+    the software, and it is better to know it up front than to discover it in
+    the results.
+    """
+    import collections
+    grid = GridMap.load_plan(PKG / "maps" / "warehouse_plan.json")
+    pass_width = 2 * (ROBOT_RADIUS + 0.15) + 0.25
+    hist = collections.Counter()
+    total = single = 0
+    for row in range(0, grid.h, 2):
+        for col in range(0, grid.w, 2):
+            if grid.at(col, row):
+                continue
+            width = grid.free_width(*grid.grid_to_world(col, row))
+            total += 1
+            single += width < pass_width
+            hist[round(width)] += 1
+    if not total:
+        print("no drivable floor")
+        return 1
+    print(f"  sampled {total} drivable cells")
+    print(f"  two robots need {pass_width:.2f} m to pass")
+    print(f"  single-file floor: {single} cells ({single / total * 100:.1f}%)")
+    print("  corridor width distribution:")
+    for width in sorted(hist):
+        share = hist[width] / total * 100
+        print(f"    {width:>3} m  {share:5.1f}%  " + "#" * int(share / 2))
+    if single == 0:
+        print("\n  No chokepoints. Contention here comes from robot density and\n"
+              "  from blockages, not from the layout -- see --scenario blocked_aisle.")
+    return 0
 
 
 def run_sweep(args):
@@ -391,15 +499,22 @@ def main():
     ap.add_argument("--policy", default="cooperative",
                     choices=["cooperative", "stop_and_wait"])
     ap.add_argument("--scenario", default="rush_hour",
-                    choices=["crossing", "rush_hour"],
-                    help="rush_hour funnels the whole fleet through two aisles")
+                    choices=["crossing", "rush_hour", "blocked_aisle"],
+                    help="rush_hour funnels the fleet through two aisles; "
+                         "blocked_aisle drops an unmapped pallet stack into one "
+                         "of them part-way through the run")
     ap.add_argument("--compare", action="store_true",
                     help="run both policies on the identical workload")
     ap.add_argument("--sweep", type=str, default="",
                     help="comma-separated fleet sizes to compare, e.g. 3,4,5,6")
     ap.add_argument("--trace", type=Path, help="write a playback trace here")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--measure-corridors", action="store_true",
+                    help="report how much of the floor is single-file, then exit")
     args = ap.parse_args()
+
+    if args.measure_corridors:
+        return measure_corridors()
 
     if args.sweep:
         return run_sweep(args)

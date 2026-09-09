@@ -500,6 +500,73 @@ class TestLiveness(unittest.TestCase):
         self.assertEqual(agent.state.task, "t0")
 
 
+class TestBlockedAisle(unittest.TestCase):
+    """Discovering, sharing and routing around something the map does not know."""
+
+    def make_agent(self, robot_id="amr_1"):
+        self.clock = [0.0]
+        return EdgeAgent(robot_id, load_plan(), limits=Limits(dt=0.1),
+                         clock=lambda: self.clock[0])
+
+    def test_a_reported_block_closes_the_route_through_it(self):
+        agent = self.make_agent()
+        agent.set_pose(-2.9, -20.0, math.pi / 2)
+        plain = agent.planner.plan((-2.9, -20.0), (-2.9, -6.0))
+        self.assertTrue(plain)
+
+        wall = {agent.grid.world_to_grid(x, -13.0)
+                for x in (-4.5, -4.0, -3.5, -3.0, -2.5, -2.0, -1.5, -1.2)}
+        detour = agent.planner.plan((-2.9, -20.0), (-2.9, -6.0),
+                                    {cell: 1e6 for cell in wall})
+        self.assertTrue(detour, "a blocked aisle must not make the goal unreachable")
+        crossed = {agent.grid.world_to_grid(x, y) for (x, y) in detour}
+        self.assertFalse(crossed & wall, "route still goes through the blockage")
+
+    def test_a_block_a_peer_found_is_adopted(self):
+        agent = self.make_agent()
+        agent.set_pose(-2.9, -20.0, math.pi / 2)
+        finder = FleetState("amr_2")
+        cell = agent.grid.world_to_grid(-2.9, -13.0)
+        finder.blocked = [cell]
+        agent.on_mesh(finder.to_json(), 0.0)
+        self.assertIn(cell, agent._blocked)
+
+    def test_a_block_expires_rather_than_being_believed_forever(self):
+        agent = self.make_agent()
+        agent.set_pose(-2.9, -20.0, math.pi / 2)
+        finder = FleetState("amr_2")
+        cell = agent.grid.world_to_grid(-2.9, -13.0)
+        finder.blocked = [cell]
+        agent.on_mesh(finder.to_json(), 0.0)
+        self.clock[0] = 10_000.0
+        agent._expire_blocks(self.clock[0])
+        self.assertNotIn(cell, agent._blocked)
+
+    def test_a_blocked_aisle_counts_as_single_file(self):
+        """A 3.8 m aisle with a pallet stack in it is a single-file aisle, and
+        the static map will insist it is wide until someone says otherwise."""
+        plan = load_plan()
+        coord = Coordinator(plan)
+        self.assertFalse(coord.is_single_file(-2.9, -13.0))
+        blocked = {plan.world_to_grid(-3.5, -13.0)}
+        self.assertTrue(coord.is_single_file(-2.9, -13.0, blocked))
+
+    def test_the_warehouse_itself_has_no_chokepoints(self):
+        """Recorded because it explains the benchmark: every aisle here takes
+        two Tugbots abreast, so corridor coordination has nothing to manage and
+        contention has to come from density or from blockages."""
+        plan = load_plan()
+        pass_width = 2 * (ROBOT_RADIUS + SAFETY_MARGIN) + 0.25
+        single = 0
+        for row in range(0, plan.h, 6):
+            for col in range(0, plan.w, 6):
+                if plan.at(col, row):
+                    continue
+                if plan.free_width(*plan.grid_to_world(col, row)) < pass_width:
+                    single += 1
+        self.assertEqual(single, 0)
+
+
 class TestStations(unittest.TestCase):
     def test_pick_faces_are_all_reachable_free_cells(self):
         plan = load_plan()
