@@ -327,6 +327,38 @@ ros2 launch warehouse_picker fleet_warehouse.launch.py \
 same lidar, same tasks, naive conflict resolution — which is what the benchmark
 measures against.
 
+## What has been verified, and what has not
+
+Worth being precise about, because the two halves were checked very
+differently.
+
+**Verified by running it:**
+
+* The map, against the Fuel models' own collision geometry, including the
+  connectivity report and the Nav2 export (parsed back the way `map_server`
+  reads it, and checked for orientation as well as content).
+* Every decision the robots make. `agent_core` and everything under it is
+  ROS-free and runs in the headless twin against the real map with ray-cast
+  lidar, which is where all the benchmark numbers and most of the bugs came
+  from.
+* The three ROS nodes' wiring — topics, QoS, the 10 Hz loop, odometry
+  conversion, self-echo rejection, malformed-message handling — against a
+  stubbed `rclpy`.
+* Both browser pages, rendered in headless Chromium.
+
+**Not verified by running it:** the Gazebo launch itself. Nothing here has
+been through an actual `ros2 launch` on a machine with Gazebo installed, so
+the parts that only exist at launch time — that the Fuel Tugbot's DiffDrive
+really does publish on `/model/amr_1/odometry` under your Gazebo version, that
+the `scan_front` sensor topic resolves to the path the bridge subscribes to,
+that 8 and 12 seconds are long enough for your machine to load the world —
+are reasoned from the models' own SDF rather than observed. They are the first
+things to check on the first run, and `DEMO.md` has the three `ros2 topic hz`
+commands that tell you which one is wrong.
+
+---
+
+
 ## Tuning
 
 Everything worth changing is a module-level constant with the reasoning next
