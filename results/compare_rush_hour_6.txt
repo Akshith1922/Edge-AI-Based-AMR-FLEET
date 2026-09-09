@@ -1,2 +1,40 @@
 
 === stop_and_wait ===
+  policy            stop_and_wait
+  robots / tasks    6 / 12
+  completed         6/12   (run cut short)
+  makespan          834.4 s  <- censored, use throughput
+  throughput        0.4 tasks/min
+  mean task time    544.2 s
+  robot collisions  0
+  wall contacts     0
+  distance driven   881.3 m
+  time yielding     2434.7 s
+  replans           3320
+  (ran in 319.7 s wall clock)
+
+=== cooperative ===
+  policy            cooperative
+  robots / tasks    6 / 12
+  completed         11/12   (run cut short)
+  makespan          576.8 s  <- censored, use throughput
+  throughput        0.733 tasks/min
+  mean task time    255.5 s
+  robot collisions  0
+  wall contacts     0
+  distance driven   1550.9 m
+  time yielding     923.8 s
+  replans           2531
+  (ran in 266.2 s wall clock)
+
+=== comparison ===
+  delivered  6/12 -> 11/12
+  time to deliver 6 tasks   834.4 s -> 250.8 s   (+69.9%)
+  throughput 0.40 -> 0.73 tasks/min
+  yielding   2435 s -> 924 s of fleet time
+  collisions 0 -> 0
+
+  success criteria: zero inter-robot collisions, and at least 20% less
+  time to deliver the same work
+  -> MET
+R6 DONE

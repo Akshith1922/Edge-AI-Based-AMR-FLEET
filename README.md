@@ -40,6 +40,30 @@ The map is honest about what it finds: the 1.85 m aisle between the two western
 racks has structural columns standing in it, so 74 cells of the floor are
 unreachable and the planner correctly refuses routes into them.
 
+## The fleet, running
+
+![Six Tugbots delivering through the warehouse at rush hour](results/fleet_playback.png)
+
+`tools/twin.py --trace` records a run and `tools/make_demo.py` turns it into a
+single self-contained HTML file that plays back anywhere, with no server and no
+network. Six Tugbots, twelve deliveries, each robot showing its route, its
+battery and in plain words why it is doing what it is doing.
+
+Against an uncoordinated control arm on the identical workload — same map, same
+planner, same lidar, same tasks, only conflict resolution differs:
+
+| Scenario | Delivered | Time for the same work | Collisions |
+|---|---|---|---|
+| Rush hour, all traffic through two aisles | 6/12 → **11/12** | 834 s → **251 s** (**−70%**) | 0 → **0** |
+| Blocked aisle, an unmapped pallet narrowing it to 1.2 m | 4/12 → **11/12** | 854 s → **47 s** (**−94%**) | 0 → **0** |
+| Scattered work across a warehouse with no chokepoints | 12/12 → 12/12 | 231 s → **224 s** (−3%) | 0 → **0** |
+
+The third row is the honest one: `tools/twin.py --measure-corridors` reports
+that **not one cell of this warehouse is single-file** — every aisle takes two
+Tugbots abreast — so when the work is spread out there is nothing for
+coordination to resolve. It earns its 70–94% when the floor is contended, which
+is the case the brief is about.
+
 ---
 
 ## What `amrsim/` is

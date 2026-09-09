@@ -232,6 +232,90 @@ ids.
 
 ---
 
+## Results
+
+`tools/twin.py --compare` runs the identical workload twice, once under each
+policy, with the same seed, the same tasks and the same spawn poses. The
+control arm is the same map, the same A\*, the same lidar and the same local
+planner; only conflict resolution differs, and it is given the
+timeout-and-backoff a real stop-and-wait system has, because without it the
+scheme simply gridlocks and beating it proves nothing.
+
+Six Tugbots, twelve pick-and-drop tasks, 900-second window:
+
+| Scenario | | stop-and-wait | cooperative | |
+|---|---|---|---|---|
+| **Rush hour** — every pickup at a northern rack face, every drop at the southern docks, so the whole fleet funnels through two aisles at once | delivered | 6 / 12 | **11 / 12** | |
+| | time to deliver the same 6 | 834.4 s | **250.8 s** | **−69.9%** |
+| | fleet time spent yielding | 2435 s | **924 s** | |
+| | inter-robot collisions | 0 | **0** | |
+| **Blocked aisle** — the same, plus a 1.3 m pallet stack dropped into one of the two aisles at t=45 s, leaving a 1.2 m gap. It exists only in the lidar, never in the map | delivered | 4 / 12 | **11 / 12** | |
+| | time to deliver the same 4 | 854.0 s | **46.6 s** | **−94.5%** |
+| | fleet time spent yielding | 2687 s | **268 s** | |
+| | inter-robot collisions | 0 | **0** | |
+| | robots that hit the pallet | 0 | **0** | |
+| **Crossing** — pickups and drops scattered across the building | delivered | 12 / 12 | 12 / 12 | |
+| | makespan | 231.1 s | **223.9 s** | −3.1% |
+| | inter-robot collisions | 0 | **0** | |
+
+Zero collisions in every run of both arms, which is what the local planner
+guarantees — it is not a property of the coordination layer and the control
+arm gets it too.
+
+### Why the scenarios differ so much, and why that is the interesting part
+
+Coordination is worth 70% under congestion and 3% when the floor is quiet.
+That is not a scenario chosen to flatter it; it follows from the building:
+
+```
+$ python3 tools/twin.py --measure-corridors
+  two robots need 1.35 m to pass
+  single-file floor: 0 cells (0.0%)
+    2 m    3.2%
+    3 m    3.2%
+    4 m   27.1%
+    5 m   66.5%
+```
+
+**Not one cell of this warehouse is single-file.** Every aisle takes two
+Tugbots abreast, so there is no chokepoint for give-way, throttling or passing
+bays to manage, and on a scattered workload the coordinated fleet is doing
+little the uncoordinated one is not. Contention here has to come from
+somewhere else — from density, from all the work being at one end of the
+building, or from something dropped in an aisle.
+
+Rush hour supplies it by funnelling twelve deliveries through two aisles to
+four dock points. There the uncoordinated fleet spends **2435 robot-seconds
+frozen** — more than a third of all available fleet time — and delivers half
+the work in the same window. The blocked aisle supplies it a second way, by
+narrowing a 3.8 m aisle to a 1.2 m gap that one robot fits through and two do
+not; the uncoordinated fleet manages four deliveries and spends 2687 seconds
+stopped. Those are the failure modes the brief describes, and they are what the
+coordination layer exists to prevent.
+
+Worth noting separately: **neither arm ever touched the pallet**, in any run.
+Avoiding an obstacle nobody put on the map is the local planner's job, and it
+does it whether or not the robots are coordinating. What coordination changes
+is what happens when six robots want the same 1.2 m gap.
+
+The honest summary is that this warehouse is a generous one, and a fleet twice
+this size, or a narrower building, is where the layer earns its keep every
+day rather than only at rush hour.
+
+### Reproducing
+
+```bash
+python3 tools/twin.py --compare --robots 6 --scenario rush_hour --tasks 12
+python3 tools/twin.py --compare --robots 6 --scenario crossing  --tasks 12
+python3 tools/twin.py --sweep 3,4,5,6 --scenario crossing        # density curve
+python3 tools/twin.py --measure-corridors                        # the layout fact
+```
+
+Each `--compare` takes a few minutes on a laptop and needs nothing installed.
+
+---
+
+
 ## Launch arguments
 
 ```bash

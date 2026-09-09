@@ -35,6 +35,8 @@ One self-contained HTML file — map embedded, trace inline, no server and no
 network. Play, scrub, and step through the run; each robot shows its route,
 its battery, and in plain words why it is doing what it is doing.
 
+![The playback page](results/fleet_playback.png)
+
 ---
 
 ## 2. The real thing: Gazebo + ROS 2
