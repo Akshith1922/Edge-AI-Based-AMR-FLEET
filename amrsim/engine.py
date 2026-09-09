@@ -69,7 +69,8 @@ class Simulation:
         self.by_id = {r.id: r for r in self.robots}
 
         self.obstacles = set()          # ground truth: what is physically there
-        self.events = []                # scripted scenario events
+        self.events = {}                # tick -> [scripted scenario events]
+        self.recurring = []             # (start_tick, fn) run every tick
         self.log = []                   # (tick, level, text)
         self.activity = {k: 0 for k in ALGORITHMS}
         self.scenario_name = "custom"
@@ -95,7 +96,18 @@ class Simulation:
             self.robots.append(r)
 
     def schedule(self, tick, fn):
-        self.events.append((tick, fn))
+        """Fire `fn(sim)` once, at `tick`."""
+        self.events.setdefault(tick, []).append(fn)
+
+    def every_tick(self, fn, start=1):
+        """Fire `fn(sim)` on every tick from `start` onwards.
+
+        A continuous workload has to be expressed this way rather than as one
+        scheduled event per tick: pre-scheduling to a fixed horizon both scans
+        a growing list every tick and, worse, silently ends the task stream
+        when the horizon runs out.
+        """
+        self.recurring.append((start, fn))
 
     def emit(self, text, level="info"):
         self.log.append((self.tick, level, text))
@@ -144,11 +156,14 @@ class Simulation:
         self.activity = {k: 0 for k in ALGORITHMS}
         self._full_blocks = frozenset(self.blocks.full_blocks())
 
-        for t, fn in self.events:
-            if t == self.tick:
+        for fn in self.events.pop(self.tick, ()):
+            fn(self)
+        for start, fn in self.recurring:
+            if self.tick >= start:
                 fn(self)
 
         self._heartbeat_pass()          # Algorithm 5
+        self._battery_pass()
         self._failure_pass()            # Algorithm 5
         self._sensing_pass()            # Algorithm 4
         self._allocation_pass()         # Algorithm 6
@@ -172,6 +187,37 @@ class Simulation:
         for r in self.robots:
             if r.state != RobotState.FAILED and not r.heartbeat_frozen:
                 r.last_heartbeat = self.tick
+
+    def _battery_pass(self):
+        """Drive the charge cycle.
+
+        A robot that runs flat stops bidding (Algorithm 6's prefilter), so
+        without somewhere to put the charge back it would retire permanently
+        and the fleet would park itself while work queued up. A robot only
+        goes on charge once it is free — a claimed task is never pre-empted,
+        which is the documented no-preemption policy.
+        """
+        for r in self.robots:
+            if not r.is_alive():
+                continue
+            if not r.charging and r.battery < self.cfg.BATTERY_MIN_BID:
+                # Flagged as soon as it runs low, even mid-task: that stops it
+                # bidding for anything *new*. The task it already holds is not
+                # pre-empted — that is the documented no-preemption policy —
+                # so it finishes, parks, and charges.
+                r.charging = True
+                self.emit(f"Robot {r.id} is low ({r.battery:.0f}%) — will charge "
+                          f"after its current job", "warn")
+            if not r.charging:
+                continue
+            if r.pos() in self.warehouse.parking_bays or r.pos() == getattr(r, "home", None):
+                r.battery = min(100.0, r.battery + self.cfg.CHARGE_RATE_PER_TICK)
+                if r.state in (RobotState.IDLE, RobotState.CHARGING):
+                    r.state = RobotState.CHARGING
+            if r.battery >= self.cfg.BATTERY_RESUME:
+                r.charging = False
+                r.state = RobotState.IDLE
+                self.emit(f"Robot {r.id} charged to {r.battery:.0f}% — back in service", "good")
 
     def _failure_pass(self):
         ttl = (self.cfg.HEARTBEAT_TTL if self.mode == "coordinated"
@@ -456,7 +502,7 @@ class Simulation:
                           priority_score=robot.priority_score(self.warehouse),
                           lamport_ts=self.clock.tick(), tail=self.cfg.COOP_WINDOW)
         self.table.commit(res)
-        if robot.state not in (RobotState.FAILED,):
+        if robot.state not in (RobotState.FAILED, RobotState.CHARGING):
             robot.state = RobotState.IDLE
 
     def _wait_for_clearance(self, robot):
@@ -852,6 +898,7 @@ class Simulation:
     # ---------------------------------------------------------------- output
     def snapshot(self, include_layout=False):
         m = self.metrics
+        avg_batt, min_batt = m.battery(self.robots)
         data = {
             "tick": self.tick,
             "mode": self.mode,
@@ -865,6 +912,9 @@ class Simulation:
             "corridors": self.locks.snapshot(),
             "heat": [[c[0], c[1], v] for c, v in self.table.heat(self.tick).items()],
             "activity": self.activity,
+            "tasks_stats": self.pool.stats(self.tick),
+            "battery": {"avg": round(avg_batt, 1), "min": round(min_batt, 1),
+                        "charging": sum(1 for r in self.robots if r.charging)},
             "metrics": m.summary(),
             "history": list(m.history)[-180:],
             "log": [{"t": t, "level": lv, "text": tx} for t, lv, tx in self.log[-40:]],

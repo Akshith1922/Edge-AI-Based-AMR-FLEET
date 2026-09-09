@@ -13,7 +13,7 @@ cd Edge-AI-Based-AMR-FLEET
 
 python3 run_dashboard.py                     # opens http://127.0.0.1:8000
 python3 run_benchmark.py --trials 8          # writes results/report.html
-python3 -m unittest discover -s tests -t .   # 59 tests, ~7 seconds
+python3 -m unittest discover -s tests -t .   # 66 tests, ~16 seconds
 ```
 
 Useful flags:
@@ -95,10 +95,25 @@ mean task time and distance — see §5.
 | Red ✕ | Confirmed block event (gossiped); faded ✕ = softened to UNCONFIRMED |
 | Dashed cyan line through an aisle | Current chokepoint flow direction |
 
+**Task pipeline.** `Received` is every order the WMS has released. The stacked
+bar splits it into delivered / in progress / at auction / pending, and those
+four always sum back to `received` — if they ever do not, something has lost a
+task. `Outstanding` is `received - delivered`, i.e. the work still owed.
+
 **Tiles.** `Collisions` is the safety invariant and must stay 0. `Hard stops`
 counts *unplanned* stops — the number coordination is meant to drive to zero.
 `Reassign lag` is the mean ticks from a robot going silent to its task being
-back in the pool.
+back in the pool. `Fleet battery` is the live average; the fleet header shows
+the minimum too, which is the one that matters.
+
+**Charts.** `Received vs delivered` should show two roughly parallel staircases
+— if the grey line pulls away from the blue one, the fleet is falling behind.
+`Outstanding queue` should sit flat in steady state. `Robots waiting` is on a
+fixed 0..fleet-size scale on purpose: auto-scaling a series that is almost
+always zero turns one blip into a full-height spike and tells you nothing.
+`Avg task time` is a rolling mean of the last 12 deliveries, not the cumulative
+mean — the cumulative one can only creep, so it never shows the fleet
+recovering after a block or a failure.
 
 **Algorithms firing.** Lit = that algorithm did something this tick. A1 and A2
 run constantly; A4 lights when a block is confirmed, softened or cleared; A5 on
@@ -167,6 +182,15 @@ coordinated's stay at zero. Completion rate favours coordination at every
 density. `run_benchmark.py --robots N` reproduces it. Lower `ALPHA` in
 `config.py` to trade congestion avoidance for distance.
 
+**"Why does the fleet keep working forever — is the battery fake?"**
+No. Battery drains per cell travelled and gates bidding through Algorithm 6's
+prefilter. A robot below `BATTERY_MIN_BID` (25%) stops bidding for *new* work,
+finishes what it already holds — no pre-emption, the documented policy — then
+parks on a bay and charges until `BATTERY_RESUME` (65%). The hysteresis between
+those two thresholds is the point: without it a robot accepts one job at the
+floor and immediately runs flat again. Over 6000 ticks the lowest battery
+observed is ~21% and the fleet never retires.
+
 **"Isn't the baseline unfairly weak / unfairly strong?"**
 Baseline is "safety-only", exactly as the report describes: independent
 shortest-path A\*, emergency-stop on contact, fixed-timeout random backoff,
@@ -213,10 +237,13 @@ have disconnected part of the floor.
 and add it to `HEADLINE` in `run_benchmark.py` (it charts itself) or to the
 `tiles` array in `web/static/app.js`.
 
-**Tuning** — everything lives in `config.py`. The four that matter most:
+**Tuning** — everything lives in `config.py`. The ones that matter most:
 `ALPHA` (congestion avoidance vs. distance), `COOP_WINDOW` (safety horizon vs.
-planning cost), `REPLAN_INTERVAL` (responsiveness vs. plan churn), and
-`HARD_STOP_RESUME_TICKS` (how expensive an emergency stop is).
+planning cost), `REPLAN_INTERVAL` (responsiveness vs. plan churn),
+`HARD_STOP_RESUME_TICKS` (how expensive an emergency stop is), and
+`CHARGE_RATE_PER_TICK` / `BATTERY_MIN_BID` / `BATTERY_RESUME` (the charge
+cycle). Arrival rate and the release policy are arguments to the `rush_hour`
+scenario: `rate` and `backlog_cap`.
 
 **Making it genuinely distributed** — the honest next step. Give each robot its
 own `ReservationTable` and `TaskPool`, put a message bus with latency and drop

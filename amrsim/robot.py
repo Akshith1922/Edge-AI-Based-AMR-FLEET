@@ -14,6 +14,7 @@ from enum import Enum
 
 class RobotState(Enum):
     IDLE = "idle"
+    CHARGING = "charging"
     MOVING = "moving"
     WAITING = "waiting"
     QUEUED = "queued"              # holding at a chokepoint mouth
@@ -49,6 +50,7 @@ class Robot:
     entered_corridor: dict = field(default_factory=dict)
     last_plan_tick: int = -999
     resume_at: int = 0
+    charging: bool = False
     last_moved_tick: int = 0
     last_action: str = "IDLE"
     last_geometry: str = None
@@ -126,6 +128,7 @@ class Robot:
         return {
             "id": self.id, "x": self.x, "y": self.y,
             "capability": self.capability, "battery": round(self.battery, 1),
+            "charging": self.charging,
             "state": self.state.value, "task": self.task.id if self.task else None,
             "phase": self.phase if self.task else None,
             "target": list(self.target) if self.target else None,

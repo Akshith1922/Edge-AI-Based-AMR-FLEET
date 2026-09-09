@@ -102,11 +102,33 @@ function cellAt(e) {
 }
 
 /* --------------------------------------------------------------- canvas */
+//: vertical space always reserved for the chart strip, in CSS px
+const CHART_MIN = 138;
+
 function resize() {
   const L = state.layout; if (!L) return;
   const cv = $("grid"), dpr = window.devicePixelRatio || 1;
-  const avail = cv.parentElement.clientWidth - 24;
-  state.cell = Math.max(12, Math.min(26, Math.floor(avail / L.w)));
+  const wrap = cv.parentElement;
+  const stage = document.querySelector(".stage");
+  const head = document.querySelector(".stageHead");
+
+  // Fit the floor to the space that is actually free in BOTH directions.
+  // Sizing on width alone lets a wide-but-short window hand the canvas every
+  // vertical pixel, squeezing the charts under it to nothing — on a 1366x768
+  // laptop they vanished completely.
+  //
+  // The vertical budget is measured, not assumed: the wrapper's own chrome
+  // (its padding plus the hint line) does not depend on the canvas size, so
+  // subtracting the canvas from the wrapper gives it exactly, whatever the
+  // stylesheet later says.
+  const gap = parseFloat(getComputedStyle(stage).rowGap) || 12;
+  const wrapChrome = wrap.offsetHeight - cv.offsetHeight;
+  const availW = wrap.clientWidth - 24;
+  const availH = stage.clientHeight - head.offsetHeight - gap * 2
+                 - wrapChrome - CHART_MIN;
+
+  state.cell = Math.max(11, Math.min(26,
+    Math.min(Math.floor(availW / L.w), Math.floor(availH / L.h))));
   const w = state.cell * L.w, h = state.cell * L.h;
   cv.width = w * dpr; cv.height = h * dpr;
   cv.style.width = w + "px"; cv.style.height = h + "px";
@@ -286,10 +308,31 @@ function drawRobot(g, r, C, alpha) {
 /* ----------------------------------------------------------------- rail */
 function renderRail(d) {
   const m = d.metrics;
+  const ts = d.tasks_stats, batt = d.battery;
+
+  // task pipeline: the four buckets always sum back to "received"
+  const seg = [["delivered", ts.delivered, "#4cc2ff"], ["in_progress", ts.in_progress, "#3ddc97"],
+               ["auction", ts.auction, "#a78bfa"], ["pending", ts.pending, "#8b96ad"],
+               ["recovery", ts.recovery, "#ff6b6b"]];
+  const total = Math.max(1, ts.received);
+  $("pipe").innerHTML = seg.map(([k, v, c]) =>
+    `<span title="${k}: ${v}" style="width:${(100 * v / total).toFixed(2)}%;background:${c}"></span>`).join("");
+  $("pipeSub").textContent = `${ts.outstanding} outstanding of ${ts.received} received`;
+  $("taskTiles").innerHTML = [
+    ["Received", ts.received, "accent"],
+    ["Delivered", ts.delivered, "good"],
+    ["In progress", ts.in_progress, ""],
+    ["Pending", ts.pending + ts.auction, ts.pending + ts.auction > 40 ? "warn" : ""],
+  ].map(([k, v, cls]) => `<div class="tile ${cls}"><b>${v}</b><span>${k}</span></div>`).join("");
+
+  $("fleetSub").textContent =
+    `battery avg ${batt.avg}% · min ${batt.min}%` + (batt.charging ? ` · ${batt.charging} charging` : "");
+
   const tiles = [
-    ["Delivered", m.tasks_completed, "accent"],
     ["Per 100 ticks", m.throughput_per_100.toFixed(1), "accent"],
     ["Avg / p90 time", `${m.avg_task_time.toFixed(0)}/${m.p90_task_time.toFixed(0)}`, ""],
+    ["Fleet battery", `${batt.avg.toFixed(0)}%`,
+      batt.min < 25 ? "warn" : batt.avg > 60 ? "good" : ""],
     ["Collisions", m.collisions, m.collisions ? "bad" : "good"],
     ["Hard stops", m.hard_stops, m.hard_stops ? "warn" : "good"],
     ["Conflicts", m.conflict_events, ""],
@@ -327,14 +370,22 @@ function renderRail(d) {
   $("log").innerHTML = d.log.slice().reverse().map((e) =>
     `<li class="${e.level}"><span class="t">${String(e.t).padStart(4)}</span><span>${escapeHtml(e.text)}</span></li>`).join("");
 
-  spark("c_done", d.history, (h) => h.done, "#4cc2ff", true);
-  spark("c_wait", d.history, (h) => h.waiting, "#ffb020", false);
-  spark("c_avg", d.history, (h) => h.avg, "#3ddc97", false);
+  const H = d.history;
+  spark("c_done", H, [{ pick: (h) => h.received, color: "#8b96ad" },
+                      { pick: (h) => h.done, color: "#4cc2ff", fill: true }]);
+  spark("c_queue", H, [{ pick: (h) => h.pending + h.in_progress, color: "#a78bfa", fill: true }],
+        { min: 0 });
+  spark("c_wait", H, [{ pick: (h) => h.waiting, color: "#ffb020", fill: true }],
+        { min: 0, max: Math.max(2, d.robots.length), step: 1 });
+  spark("c_avg", H, [{ pick: (h) => h.avg, color: "#3ddc97", fill: true }], { min: 0 });
+  spark("c_batt", H, [{ pick: (h) => h.battery, color: "#3ddc97" },
+                      { pick: (h) => h.battery_min, color: "#ffb020" }],
+        { min: 0, max: 100, suffix: "%" });
 }
 
 const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
-function spark(id, history, pick, color, cumulative) {
+function spark(id, history, series, opts = {}) {
   const cv = $(id), dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight;
   if (!w || !h) return;
@@ -342,33 +393,59 @@ function spark(id, history, pick, color, cumulative) {
   const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, h);
   if (history.length < 2) return;
-  const vals = history.map(pick);
-  const max = Math.max(1, ...vals), min = cumulative ? 0 : Math.min(...vals);
-  const span = Math.max(1e-6, max - min);
-  const X = (i) => (i / (vals.length - 1)) * (w - 2) + 1;
-  const Y = (v) => h - 4 - ((v - min) / span) * (h - 10);
 
-  g.strokeStyle = "rgba(255,255,255,.06)"; g.lineWidth = 1;
-  for (let i = 1; i < 3; i++) {
-    const y = 4 + (h - 8) * (i / 3);
-    g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+  const cols = series.map((s) => history.map(s.pick));
+  const flat = cols.flat();
+  // A fixed range where one exists (robot counts, percentages) — auto-scaling a
+  // series that is almost always zero turns a single blip into a full-height
+  // spike, which is what made these charts unreadable.
+  let lo = opts.min !== undefined ? opts.min : Math.min(...flat);
+  let hi = opts.max !== undefined ? opts.max : Math.max(...flat);
+  if (opts.step) hi = Math.max(hi, Math.ceil(Math.max(...flat) / opts.step) * opts.step);
+  if (hi - lo < 1e-6) hi = lo + 1;
+
+  const padR = 40, padT = 12, padB = 3;          // room for the value readout
+  const X = (i) => (i / (history.length - 1)) * (w - padR - 2) + 1;
+  const Y = (v) => h - padB - ((Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo)) * (h - padT - padB);
+
+  g.strokeStyle = "rgba(255,255,255,.055)"; g.lineWidth = 1;
+  for (let i = 0; i <= 2; i++) {
+    const y = Math.round(Y(lo + (hi - lo) * (i / 2))) + .5;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(w - padR + 4, y); g.stroke();
   }
-  g.beginPath(); g.moveTo(X(0), h); g.lineTo(X(0), Y(vals[0]));
-  vals.forEach((v, i) => g.lineTo(X(i), Y(v)));
-  g.lineTo(X(vals.length - 1), h); g.closePath();
-  const grad = g.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, color + "3a"); grad.addColorStop(1, color + "00");
-  g.fillStyle = grad; g.fill();
 
-  g.beginPath(); vals.forEach((v, i) => i ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v)));
-  g.strokeStyle = color; g.lineWidth = 1.6; g.stroke();
+  const drawn = [];
+  series.forEach((s, si) => {
+    const vals = cols[si];
+    if (s.fill) {
+      g.beginPath();
+      g.moveTo(X(0), Y(lo));
+      vals.forEach((v, i) => g.lineTo(X(i), Y(v)));
+      g.lineTo(X(vals.length - 1), Y(lo)); g.closePath();
+      const grad = g.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, s.color + "3a"); grad.addColorStop(1, s.color + "00");
+      g.fillStyle = grad; g.fill();
+    }
+    g.beginPath();
+    vals.forEach((v, i) => (i ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v))));
+    g.strokeStyle = s.color; g.lineWidth = si ? 1.3 : 1.6;
+    g.lineJoin = "round"; g.stroke();
 
-  g.fillStyle = color; g.beginPath();
-  g.arc(X(vals.length - 1), Y(vals[vals.length - 1]), 2.4, 0, 6.283); g.fill();
-  g.fillStyle = "#e7edf8"; g.font = "600 11px ui-monospace,monospace";
-  g.textAlign = "right"; g.textBaseline = "top";
-  g.fillText(String(vals[vals.length - 1]), w - 2, 1);
+    const last = vals[vals.length - 1];
+    g.fillStyle = s.color;
+    g.beginPath(); g.arc(X(vals.length - 1), Y(last), 2.2, 0, 6.283); g.fill();
+    g.font = "600 10.5px ui-monospace,monospace";
+    g.textAlign = "left"; g.textBaseline = "middle";
+    let ly = Y(last);                       // nudge apart when two series coincide
+    while (drawn.some((y) => Math.abs(y - ly) < 11)) ly += 11;
+    ly = Math.min(h - 7, Math.max(7, ly));
+    drawn.push(ly);
+    g.fillText(fmt(last) + (opts.suffix || ""), w - padR + 7, ly);
+  });
 }
+
+const fmt = (v) => (Number.isInteger(v) ? String(v)
+  : Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
 
 /* ----------------------------------------------------------------- boot */
 async function boot() {

@@ -106,6 +106,7 @@ class TaskPool:
         self.set = ORSet()
         self.by_id = {}
         self.auction_log = []
+        self._stats_cache = (None, None)
 
     # ---------------------------------------------------------------- CRUD
     def create(self, kind, pickup, dropoff, capability, priority, tick, zone,
@@ -138,6 +139,36 @@ class TaskPool:
     def pending_count(self):
         return len(self.open_tasks())
 
+    def stats(self, tick=None, exclude_kinds=("reprobe",)):
+        """Live counts across the whole pipeline, for the dashboard.
+
+        `received` is every task the WMS has released so far, and the four
+        buckets below it always sum back to that number — housekeeping
+        reprobe tasks are excluded so the figures match what an operator
+        would call an order.
+        """
+        if tick is not None and self._stats_cache[0] == tick:
+            return self._stats_cache[1]     # several callers per tick
+        counts = {"received": 0, "pending": 0, "auction": 0,
+                  "in_progress": 0, "delivered": 0, "recovery": 0}
+        for t in self.all():
+            if t.kind in exclude_kinds:
+                continue
+            counts["received"] += 1
+            if t.status == TaskStatus.DONE:
+                counts["delivered"] += 1
+            elif t.status == TaskStatus.CLAIMED:
+                counts["in_progress"] += 1
+            elif t.status == TaskStatus.AUCTION:
+                counts["auction"] += 1
+            elif t.status == TaskStatus.NEEDS_RECOVERY:
+                counts["recovery"] += 1
+            else:
+                counts["pending"] += 1
+        counts["outstanding"] = (counts["received"] - counts["delivered"])
+        self._stats_cache = (tick, counts)
+        return counts
+
     # ------------------------------------------------------------- scoring
     def aged_priority(self, task, tick):
         """``aging_adjusted_score``: a task nobody wants climbs until someone does."""
@@ -148,8 +179,8 @@ class TaskPool:
         anybody computes a score or sends a bid."""
         if robot.capability != task.required_capability and task.required_capability != "any":
             return False
-        if robot.battery < 15.0:
-            return False
+        if robot.charging:
+            return False        # on charge: the engine releases it at BATTERY_RESUME
         return True
 
     SPECIALIST_RESERVE = 2.0

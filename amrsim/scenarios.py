@@ -68,7 +68,7 @@ def _faults(sim, rng, block_tick=60, fail_tick=110, clear_tick=220):
           "Continuous inbound/outbound traffic funnelled through the two busiest "
           "single-file picking aisles, with an aisle blocked at t=60 and a robot "
           "going silent at t=110. The open-ended demo case.")
-def rush_hour(sim, seed=7, rate=0.30, horizon=1200, faults=True):
+def rush_hour(sim, seed=7, rate=0.34, backlog_cap=4, faults=True):
     rng = random.Random(seed)
     pts = Points(sim.warehouse)
     sim.scenario_name = "rush_hour"
@@ -82,7 +82,13 @@ def rush_hour(sim, seed=7, rate=0.30, horizon=1200, faults=True):
         _faults(sim, rng)
 
     def background(s):
+        # Release policy: hold new work once the outstanding queue reaches
+        # backlog_cap per robot. Without a cap an open-ended demo just
+        # accumulates a backlog it can never clear, which tells you nothing
+        # except that arrivals outpace the fleet.
         if rng.random() >= rate:
+            return
+        if s.pool.stats(s.tick)["outstanding"] > backlog_cap * len(s.robots):
             return
         if rng.random() < 0.5:
             cap = "heavy" if rng.random() < 0.2 else "any"
@@ -92,8 +98,9 @@ def rush_hour(sim, seed=7, rate=0.30, horizon=1200, faults=True):
             s.spawn_task("pick", pts.face(rng), rng.choice(pts.outbound),
                          priority=1.0)
 
-    for t in range(4, horizon):
-        sim.schedule(t, background)
+    # A continuous stream, not a pre-scheduled block: the demo should never
+    # run out of work and leave the fleet standing in the charging bays.
+    sim.every_tick(background, start=4)
     return sim
 
 

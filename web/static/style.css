@@ -56,8 +56,8 @@ select{background:var(--panel2);color:var(--text);border:1px solid var(--line2);
   border-radius:8px;padding:6px 8px;font:inherit;text-transform:none}
 
 /* ------------------------------------------------------------------ body */
-main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:14px;
-  padding:14px 18px 16px;min-height:0}
+main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 336px;
+  grid-template-rows:minmax(0,1fr);gap:14px;padding:14px 18px 16px;min-height:0}
 .stage{display:flex;flex-direction:column;gap:12px;min-width:0}
 .stageHead{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .stageHead h2{font-size:12px;margin:0;text-transform:uppercase;letter-spacing:1.1px;color:var(--dim)}
@@ -72,10 +72,18 @@ main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:14px;
 #grid{display:block;width:100%;height:auto;border-radius:7px;cursor:crosshair}
 .hint{margin-top:8px;font-size:11px;color:var(--dim2)}
 
-.charts{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;min-height:0;flex:1 1 0}
+.charts{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;flex:1 1 auto;min-height:138px}
 .charts figure{margin:0;background:var(--panel);border:1px solid var(--line);
   border-radius:var(--radius);padding:9px 11px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
-.charts figcaption{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:5px}
+.charts figcaption{font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;
+ color:var(--dim);margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.charts figcaption em{font-style:normal;color:var(--dim2);letter-spacing:0;text-transform:none}
+.sw{display:inline-block;width:7px;height:7px;border-radius:2px;vertical-align:0}
+.pipe{display:flex;height:9px;border-radius:5px;overflow:hidden;background:#0d1320;margin-bottom:9px}
+.pipe span{transition:width .35s ease}
+.tiles.compact{grid-template-columns:repeat(4,1fr);gap:6px}
+.tiles.compact .tile{padding:6px 7px;border-radius:8px}
+.tiles.compact .tile b{font-size:15px}
 .spark{flex:1 1 0;width:100%;min-height:38px}
 
 /* ------------------------------------------------------------------ rail */
