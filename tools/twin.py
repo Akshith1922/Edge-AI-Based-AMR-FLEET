@@ -35,7 +35,8 @@ sys.path.insert(0, str(PKG))
 from warehouse_picker.agent_core import EdgeAgent                    # noqa: E402
 from warehouse_picker.allocation import Task                        # noqa: E402
 from warehouse_picker.navigation import Limits, wrap                 # noqa: E402
-from warehouse_picker.occupancy import GridMap, ROBOT_RADIUS         # noqa: E402
+from warehouse_picker.occupancy import (                             # noqa: E402
+    GridMap, ROBOT_RADIUS, SAFETY_MARGIN)
 from warehouse_picker.stations import (                              # noqa: E402
     charger_station, derive_stations, dock_stations)
 
@@ -409,7 +410,7 @@ def measure_corridors():
     """
     import collections
     grid = GridMap.load_plan(PKG / "maps" / "warehouse_plan.json")
-    pass_width = 2 * (ROBOT_RADIUS + 0.15) + 0.25
+    pass_width = 2 * (ROBOT_RADIUS + SAFETY_MARGIN) + 0.25
     hist = collections.Counter()
     total = single = 0
     for row in range(0, grid.h, 2):
