@@ -222,12 +222,47 @@ class TestEdgeAgentNode(unittest.TestCase):
         self.assertTrue(self.node.timers)
         self.assertAlmostEqual(self.node.timers[0].period, 0.1, places=6)
 
-    def test_odometry_is_converted_and_yaw_comes_out_right(self):
-        self.node.subs["/amr_1/odom"].cb(odom(2.9, -18.0, 1.2, 0.4))
-        self.assertAlmostEqual(self.node.agent.x, 2.9)
-        self.assertAlmostEqual(self.node.agent.y, -18.0)
-        self.assertAlmostEqual(self.node.agent.yaw, 1.2, places=6)
+    def test_odometry_yaw_and_velocity_are_converted(self):
+        """Pose is composed onto the spawn (see the frame test below); yaw and
+        velocity are checked here against the composition."""
+        _sx, _sy, syaw = self.node.spawn
+        self.node.subs["/amr_1/odom"].cb(odom(0.0, 0.0, 1.2, 0.4))
+        self.assertAlmostEqual(self.node.agent.yaw, 1.2 + syaw, places=6)
         self.assertAlmostEqual(self.node.agent.v, 0.4)
+
+    def test_odometry_is_composed_onto_the_spawn_pose(self):
+        """Gazebo's DiffDrive reports odometry relative to where the robot
+        started, so feeding it straight to a planner holding a map of the whole
+        building puts every robot at the map origin. amr_1 spawns at
+        (-2.9, -21.0) facing north; one metre 'forward' in the odometry frame
+        is one metre north in the world."""
+        self.assertIsNotNone(self.node.spawn)
+        sx, sy, syaw = self.node.spawn
+        self.assertAlmostEqual(sx, -2.9, places=3)
+        self.assertAlmostEqual(sy, -21.0, places=3)
+
+        self.node.subs["/amr_1/odom"].cb(odom(0.0, 0.0, 0.0))
+        self.assertAlmostEqual(self.node.agent.x, sx, places=3)
+        self.assertAlmostEqual(self.node.agent.y, sy, places=3)
+        self.assertAlmostEqual(self.node.agent.yaw, syaw, places=3)
+
+        self.node.subs["/amr_1/odom"].cb(odom(1.0, 0.0, 0.0))
+        self.assertAlmostEqual(self.node.agent.x, sx, places=3)
+        self.assertAlmostEqual(self.node.agent.y, sy + 1.0, places=3)
+
+        self.node.subs["/amr_1/odom"].cb(odom(0.0, 1.0, 0.0))
+        self.assertAlmostEqual(self.node.agent.x, sx - 1.0, places=3)
+        self.assertAlmostEqual(self.node.agent.y, sy, places=3)
+
+    def test_the_composed_pose_starts_on_free_floor(self):
+        """The whole point: an uncomposed pose would put the robot at (0, 0),
+        which on this map is open floor too -- so the failure is silent. Check
+        the robot starts where the world says it does."""
+        self.node.subs["/amr_1/odom"].cb(odom(0.0, 0.0, 0.0))
+        grid = self.node.agent.grid
+        self.assertFalse(grid.at(*grid.world_to_grid(self.node.agent.x,
+                                                     self.node.agent.y)))
+        self.assertGreater(math.hypot(self.node.agent.x, self.node.agent.y), 5.0)
 
     def test_a_scan_reaches_the_agent(self):
         scan = types.SimpleNamespace(ranges=[3.0] * 91, angle_min=-1.47,
@@ -238,7 +273,7 @@ class TestEdgeAgentNode(unittest.TestCase):
         self.assertEqual(len(self.node.agent._scan[0]), 91)
 
     def test_the_loop_publishes_a_twist_and_a_parsable_heartbeat(self):
-        self.node.subs["/amr_1/odom"].cb(odom(2.9, -18.0, math.pi / 2))
+        self.node.subs["/amr_1/odom"].cb(odom(0.0, 0.0, 0.0))
         self.node.timers[0].cb()
         cmd = self.node.pubs["/amr_1/cmd_vel"].sent[-1]
         self.assertIsInstance(cmd.linear.x, float)
@@ -255,7 +290,7 @@ class TestEdgeAgentNode(unittest.TestCase):
         self.assertEqual([p["id"] for p in self.node.agent.peers.alive()], ["amr_2"])
 
     def test_it_ignores_the_echo_of_its_own_heartbeat(self):
-        self.node.subs["/amr_1/odom"].cb(odom(2.9, -18.0, 0.0))
+        self.node.subs["/amr_1/odom"].cb(odom(0.0, 0.0, 0.0))
         self.node.timers[0].cb()
         mine = self.node.pubs["/fleet/mesh"].sent[-1].data
         self.node.subs["/fleet/mesh"].cb(String(data=mine))
@@ -268,14 +303,16 @@ class TestEdgeAgentNode(unittest.TestCase):
         self.assertEqual(self.node.agent.peers.alive(), [])
 
     def test_it_drives_once_it_has_a_pose_and_a_task(self):
+        """Pickup is up the aisle the robot spawns in, so it should set off
+        without needing to turn round first."""
         self.node.subs["/fleet/tasks"].cb(String(data=json.dumps({
             "from": "dispatcher", "done": [], "bids": {},
-            "tasks": [{"id": "t0", "pickup": [2.9, -10.0], "dropoff": [2.9, -6.0],
+            "tasks": [{"id": "t0", "pickup": [-2.9, -14.0], "dropoff": [-2.9, -10.0],
                        "priority": 1.0, "created": 0.0, "label": "t0"}]})))
         moved = False
         for i in range(80):
             self.node._clock.t = i * 0.1
-            self.node.subs["/amr_1/odom"].cb(odom(2.9, -18.0, math.pi / 2))
+            self.node.subs["/amr_1/odom"].cb(odom(0.0, 0.0, 0.0))
             self.node.timers[0].cb()
             if self.node.pubs["/amr_1/cmd_vel"].sent[-1].linear.x > 0.05:
                 moved = True

@@ -79,10 +79,11 @@ class EdgeFleetAgentNode(Node):
         limits = Limits(v_max=float(self.get_parameter("max_speed").value),
                         dt=1.0 / CONTROL_HZ)
 
+        self.spawn = self._spawn_from_layout()
         self.agent = EdgeAgent(
             self.robot_id, grid, limits=limits,
             charger=charger.xy() if charger else None,
-            home=self._home_from_layout(),
+            home=self.spawn[:2] if self.spawn else None,
             battery=float(self.get_parameter("battery").value),
             clock=self._now,
             policy=self.get_parameter("policy").value)
@@ -106,8 +107,25 @@ class EdgeFleetAgentNode(Node):
             f"{grid.resolution} m, policy={self.agent.policy}, "
             f"charger={'yes' if charger else 'none'}")
 
-    def _home_from_layout(self):
-        """Standby bay: this robot's spawn pose, read from the world layout."""
+    def _spawn_from_layout(self):
+        """This robot's spawn pose in world coordinates, from the world layout.
+
+        Needed for two different things, and the second one is not obvious.
+
+        Gazebo's DiffDrive publishes odometry **relative to where the robot
+        started**, not in world coordinates. Checked against ground truth on a
+        running simulation: amr_1 sits at (-2.9, -21.0) in
+        `/world/<world>/dynamic_pose/info` while `/model/amr_1/odometry` reads
+        (0, 0). Feed that straight into a planner holding a map of the whole
+        building and every robot believes it is standing at the map origin, in
+        the middle of the floor, and plans from there.
+
+        So odometry is composed with this pose to recover the world frame. That
+        is also what a real robot does between being told where it was parked
+        and its localiser converging; the difference on hardware is that wheel
+        odometry drifts, which is what AMCL against `maps/warehouse.yaml` is
+        for. Swap this for the localiser's output and nothing else changes.
+        """
         path = self.get_parameter("layout_path").value
         if not path:
             from ament_index_python.packages import get_package_share_directory
@@ -116,10 +134,15 @@ class EdgeFleetAgentNode(Node):
         try:
             layout = json.loads(Path(path).read_text())
         except (OSError, ValueError):
+            self.get_logger().warn(
+                f"no layout at {path}: odometry will be treated as world frame")
             return None
         for robot in layout.get("robots", []):
             if robot.get("name") == self.robot_id:
-                return (robot["x"], robot["y"])
+                return (robot["x"], robot["y"], robot.get("yaw", 0.0))
+        self.get_logger().warn(
+            f"{self.robot_id} is not in the layout: odometry will be treated "
+            f"as world frame, which is wrong unless it spawned at the origin")
         return None
 
     def _default_map(self):
@@ -134,12 +157,23 @@ class EdgeFleetAgentNode(Node):
 
     def on_odom(self, msg):
         p = msg.pose.pose.position
-        self.agent.set_pose(p.x, p.y, yaw_from_quaternion(msg.pose.pose.orientation),
+        yaw = yaw_from_quaternion(msg.pose.pose.orientation)
+        x, y, yaw = self._to_world(p.x, p.y, yaw)
+        self.agent.set_pose(x, y, yaw,
                             msg.twist.twist.linear.x, msg.twist.twist.angular.z)
         if not self._odom_seen:
             self._odom_seen = True
             self.get_logger().info(
-                f"[{self.robot_id}] odometry acquired at ({p.x:.2f}, {p.y:.2f})")
+                f"[{self.robot_id}] odometry acquired; world pose "
+                f"({x:.2f}, {y:.2f}, {math.degrees(yaw):.0f} deg)")
+
+    def _to_world(self, x, y, yaw):
+        """Compose odometry, which starts at zero, onto the known spawn pose."""
+        if self.spawn is None:
+            return x, y, yaw
+        sx, sy, syaw = self.spawn
+        c, s = math.cos(syaw), math.sin(syaw)
+        return sx + x * c - y * s, sy + x * s + y * c, yaw + syaw
 
     def on_scan(self, msg):
         self.agent.set_scan(msg.ranges, msg.angle_min, msg.angle_increment,

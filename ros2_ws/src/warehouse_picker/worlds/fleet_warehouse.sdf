@@ -5,17 +5,31 @@
 
     Two things about this file are deliberate and easy to undo by accident:
 
-    1. No <plugin> blocks at world level. Gazebo falls back to its own default
-       server configuration, which loads Physics, UserCommands, SceneBroadcaster,
-       Contact, Imu and Sensors with the correct library names for whichever
-       version is installed. Hard-coding `ignition-gazebo-*-system` here builds a
-       world that only runs on Fortress; hard-coding `gz-sim-*-system` builds one
-       that only runs on Garden and later. Declaring nothing runs on both.
+    1. The plugin block below is required, and the Sensors system in it is the
+       one that matters. Gazebo only falls back to its default server config
+       when a world declares no plugins at all, and on Harmonic that default is
+       just three systems:
 
-    2. The three fleet robots are spawned *here*, not by `ros_gz_sim create` in
-       the launch file. Doing both is what produced duplicate `amr_1` entities,
-       and a renamed entity silently moves its topics off `/model/amr_1/...`,
-       which breaks every bridge.
+           $ grep filename /usr/share/gz/gz-sim8/server.config
+           gz-sim-physics-system
+           gz-sim-scene-broadcaster-system
+           gz-sim-user-commands-system
+
+       No Sensors system means no lidar. The Tugbot scan_front sensor never
+       publishes, the bridge subscribes to a topic that does not exist, and the
+       agents drive blind, which is exactly the fault this package exists to
+       fix. An earlier revision of this file declared nothing, on the assumption
+       that the fallback covered sensors. Loading the world and running
+       `gz topic -l` showed it does not.
+
+       The names are the modern gz-sim ones, matching the `gz sim` command the
+       launch file runs (Garden and later). On Fortress, `ign gazebo` wants the
+       ignition-gazebo spelling.
+
+    2. The fleet robots are spawned *here*, not by `ros_gz_sim create` in the
+       launch file. Doing both is what produced duplicate amr_1 entities, and a
+       renamed entity silently moves its topics off /model/amr_1/..., which
+       breaks every bridge.
   -->
   <world name='world_demo'>
     <gravity>0 0 -9.8</gravity>
@@ -24,6 +38,21 @@
       <real_time_factor>1</real_time_factor>
       <max_contacts>10</max_contacts>
     </physics>
+
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-contact-system"
+            name="gz::sim::systems::Contact"/>
+    <plugin filename="gz-sim-imu-system"
+            name="gz::sim::systems::Imu"/>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
 
     <scene>
       <ambient>1 1 1 1</ambient>
