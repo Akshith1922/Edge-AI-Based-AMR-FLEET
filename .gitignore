@@ -6,3 +6,13 @@ venv/
 # generated benchmark output; results/dashboard.png is checked in for the README
 results/*.csv
 results/*.html
+
+# Fuel model cache populated by tools/fetch_world_assets.py. The derived
+# layout in config/ is committed instead; the upstream meshes are not ours
+# to redistribute.
+.fuel-cache/
+
+# colcon build products
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
