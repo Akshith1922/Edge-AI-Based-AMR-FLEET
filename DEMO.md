@@ -17,11 +17,21 @@ python3 tools/twin.py --robots 6 --scenario rush_hour --tasks 12
 
 ```bash
 # fleet vs the uncoordinated control arm, identical tasks and seeds
+python3 tools/twin.py --compare --robots 6 --scenario rush_hour
+python3 tools/twin.py --compare --robots 6 --scenario blocked_aisle
 python3 tools/twin.py --compare --robots 6 --scenario crossing
 
-# how the advantage grows with congestion
+# how much of the floor is too narrow for two robots to pass
+python3 tools/twin.py --measure-corridors
+
+# fleet size sweep, both policies at each size
 python3 tools/twin.py --sweep 3,4,5,6 --scenario crossing
 ```
+
+Run `--measure-corridors` before believing any coordination benchmark. This
+warehouse has no single-file floor at all, so on scattered work there is
+nothing for the coordination layer to resolve and the two arms come out level;
+`rush_hour` and `blocked_aisle` are the scenarios where contention is real.
 
 ### A playback page you can hand to someone
 
