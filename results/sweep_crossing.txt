@@ -3,3 +3,5 @@
   crossing n=4 stop_and_wait  makespan= 357.2s done=11/12 collisions=0 yield=1348s
   crossing n=4 cooperative    makespan= 253.9s done=12/12 collisions=0 yield=135s
   crossing n=5 stop_and_wait  makespan= 249.4s done=12/12 collisions=0 yield=135s
+  crossing n=5 cooperative    makespan= 359.6s done=12/12 collisions=0 yield=346s
+  crossing n=6 stop_and_wait  makespan= 231.1s done=12/12 collisions=0 yield=159s

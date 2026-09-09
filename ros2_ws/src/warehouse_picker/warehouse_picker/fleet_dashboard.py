@@ -61,6 +61,31 @@ class Store:
             self.events.append({"t": round(now - self.started, 1), "text": text})
             del self.events[:-40]
 
+    def note_transitions(self, data, now):
+        """Log the moments worth seeing, not every frame of every robot.
+
+        A dashboard that prints the current state 10 times a second tells you
+        nothing you could not read off the table. What is worth a line is the
+        *change*: a robot starting to give way, finishing a task, reporting a
+        blocked aisle, going flat.
+        """
+        rid = data["id"]
+        with self.lock:
+            prev = self.telemetry.get(rid, {})
+        if not prev:
+            return
+        if data.get("mode") != prev.get("mode"):
+            self.note(f"{rid}: {prev.get('mode')} &rarr; {data.get('mode')}", now)
+        if data.get("waiting_for") != prev.get("waiting_for"):
+            if data.get("waiting_for"):
+                self.note(f"{rid} is giving way to {data['waiting_for']}", now)
+            else:
+                self.note(f"{rid} is clear again", now)
+        if data.get("tasks_done", 0) > prev.get("tasks_done", 0):
+            self.note(f"{rid} delivered ({data['tasks_done']} this shift)", now)
+        if len(data.get("blocked", ())) > len(prev.get("blocked", ())):
+            self.note(f"{rid} reports an aisle blocked; fleet rerouting", now)
+
     def snapshot(self, now):
         with self.lock:
             robots = []
@@ -149,8 +174,11 @@ class FleetDashboard(Node):
             data = json.loads(msg.data)
         except ValueError:
             return
-        if isinstance(data, dict) and "id" in data:
-            self.store.update_telemetry(data, time.time())
+        if not (isinstance(data, dict) and "id" in data):
+            return
+        now = time.time()
+        self.store.note_transitions(data, now)
+        self.store.update_telemetry(data, now)
 
 
 def _page(assets):
@@ -178,21 +206,28 @@ header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;
        align-items:baseline;gap:16px;flex-wrap:wrap}
 h1{font-size:16px;margin:0;letter-spacing:.02em}
 .sub{color:var(--dim);font-size:12px}
-main{display:grid;grid-template-columns:minmax(320px,1fr) 420px;gap:16px;padding:16px}
+main{display:grid;grid-template-columns:auto minmax(340px,1fr);gap:16px;padding:16px}
 @media(max-width:900px){main{grid-template-columns:1fr}}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
       padding:14px;min-width:0}
 .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;
          color:var(--dim);margin:0 0 10px}
-#stage{position:relative;width:100%;aspect-ratio:30/50;background:#f7f7f4;
+/* The warehouse is 30 x 50 m: tall and narrow. Size the stage off viewport
+   height and let the width follow. Driving it from width instead makes the
+   map 1400 px tall in a 900 px window, and the demo opens zoomed into one
+   corner of the building. */
+#stage{position:relative;height:min(74vh,720px);aspect-ratio:30/50;
+       max-width:100%;margin:0 auto;background:#f7f7f4;
        border-radius:6px;overflow:hidden}
+@media(max-width:900px){#stage{height:auto;width:min(100%,340px)}}
 #stage img{width:100%;height:100%;display:block;object-fit:fill}
 #stage svg{position:absolute;inset:0;width:100%;height:100%}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th{text-align:left;font-weight:500;color:var(--dim);font-size:11px;
    text-transform:uppercase;letter-spacing:.06em;padding:4px 6px}
 td{padding:6px;border-top:1px solid var(--line);font-size:13px}
-.bar{height:6px;background:#2a3040;border-radius:3px;overflow:hidden;min-width:54px}
+.bar{height:6px;width:54px;background:#2a3040;border-radius:3px;overflow:hidden;
+     display:inline-block;vertical-align:middle;margin-right:7px}
 .bar i{display:block;height:100%}
 .pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;
       border:1px solid var(--line)}
