@@ -263,6 +263,22 @@ class TestProtocol(unittest.TestCase):
                  {"id": "amr_3", "waiting_for": None}]
         self.assertIsNone(find_wait_cycle("amr_1", "amr_2", peers))
 
+    def test_stop_and_wait_recovers_from_a_stall(self):
+        """The control arm is given the timeout-and-backoff that real
+        stop-and-wait systems have. Without it the scheme gridlocks outright
+        and comparing against it proves nothing."""
+        plan = load_plan()
+        me = FleetState("amr_1")
+        me.x, me.y, me.yaw = 2.9, -18.0, math.pi / 2
+        peer = {"id": "amr_2", "x": 3.6, "y": -17.2, "yaw": math.pi / 2,
+                "v": 0.0, "priority": 1.0, "lamport": 0, "claim": [], "eta": [],
+                "waiting_for": None, "blocked": [], "retreating": False}
+        coord = Coordinator(plan, policy="stop_and_wait")
+        self.assertEqual(coord.decide(me, [peer], 0.0, stalled_for=0.0).speed_cap,
+                         0.0)
+        freed = coord.decide(me, [peer], 11.0, stalled_for=11.0)
+        self.assertNotEqual(freed.speed_cap, 0.0)
+
     def test_stop_and_wait_freezes_and_cooperative_does_not(self):
         plan = load_plan()
         me = FleetState("amr_1")

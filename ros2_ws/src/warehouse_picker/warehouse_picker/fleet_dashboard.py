@@ -19,9 +19,9 @@ what the agents encode with, so the two cannot drift apart again.
 """
 
 import json
-import os
 import threading
 import time
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import rclpy
@@ -130,9 +130,8 @@ class FleetDashboard(Node):
 
         Handler.store = self.store
         Handler.page = _page(assets).encode()
-        map_png = os.path.join(assets, "maps", "warehouse_map.png")
-        Handler.map_png = (open(map_png, "rb").read()
-                           if os.path.exists(map_png) else b"")
+        map_png = Path(assets) / "maps" / "warehouse_map.png"
+        Handler.map_png = map_png.read_bytes() if map_png.exists() else b""
 
         host = self.get_parameter("host").value
         port = int(self.get_parameter("port").value)
@@ -156,10 +155,10 @@ class FleetDashboard(Node):
 
 def _page(assets):
     bounds = [-15.0, -25.0, 15.0, 25.0]
-    layout = os.path.join(assets, "config", "warehouse_layout.json")
-    if os.path.exists(layout):
+    layout = Path(assets) / "config" / "warehouse_layout.json"
+    if layout.exists():
         try:
-            bounds = json.loads(open(layout).read())["bounds"]
+            bounds = json.loads(layout.read_text())["bounds"]
         except (ValueError, KeyError):
             pass
     return DASHBOARD_HTML.replace("__BOUNDS__", json.dumps(bounds))

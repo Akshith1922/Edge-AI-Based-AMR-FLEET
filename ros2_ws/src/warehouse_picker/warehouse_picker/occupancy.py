@@ -77,9 +77,6 @@ class GridMap:
         if self.in_bounds(col, row):
             self.cells[row * self.w + col] = value
 
-    def is_free_world(self, x, y):
-        return self.at(*self.world_to_grid(x, y)) == FREE
-
     # ---- construction ----------------------------------------------------
 
     @classmethod
@@ -209,8 +206,9 @@ class GridMap:
         Use this *after* inflating, never before. Inflating by `r` guarantees
         no free gap narrower than `2r` survives, so as long as the coarse cell
         is smaller than `2r` a centre sample cannot step over an obstacle --
-        while `coarsen` would additionally round every rack outward by up to a
-        full cell and close aisles that are genuinely drivable. The 1.88 m
+        while the obvious alternative -- marking a coarse cell occupied if any
+        fine cell in it is -- additionally rounds every rack outward by up to a
+        full cell and closes aisles that are genuinely drivable. The 1.85 m
         aisle between the two western racks is exactly such a case.
         """
         w, h = self.w // factor, self.h // factor
@@ -220,23 +218,6 @@ class GridMap:
             src = (row * factor + half) * self.w + half
             for col in range(w):
                 out.cells[row * w + col] = self.cells[src + col * factor]
-        return out
-
-    def coarsen(self, factor):
-        """A conservative lower-resolution copy: occupied if *any* child is."""
-        w = self.w // factor
-        h = self.h // factor
-        out = GridMap(self.origin_x, self.origin_y, self.resolution * factor, w, h)
-        for row in range(h):
-            base = row * factor
-            for col in range(w):
-                hit = 0
-                for dr in range(factor):
-                    off = (base + dr) * self.w + col * factor
-                    if any(self.cells[off:off + factor]):
-                        hit = 1
-                        break
-                out.cells[row * w + col] = hit
         return out
 
     def distance_field(self):

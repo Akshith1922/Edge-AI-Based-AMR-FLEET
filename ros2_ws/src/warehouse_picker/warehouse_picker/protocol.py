@@ -41,9 +41,11 @@ PROTOCOL_VERSION = 2
 # by the time it arrives.
 CLAIM_HORIZON_M = 6.0
 
-HEARTBEAT_HZ = 5.0
-HEARTBEAT_TTL = 2.0          # seconds without a heartbeat before a peer is
-                             # presumed failed and its claims are dropped
+# A peer that has said nothing for this long is presumed unreachable and its
+# claims stop constraining anyone. Short enough that a robot which loses radio
+# mid-aisle does not hold the corridor; long enough to ride out the packet loss
+# a warehouse full of metal produces.
+HEARTBEAT_TTL = 2.0
 
 # A robot's priority climbs by this much per second spent yielding, and is what
 # guarantees that no robot is starved indefinitely at a busy junction.
@@ -51,11 +53,9 @@ AGING_RATE = 0.08
 BASE_PRIORITY = 1.0
 
 # Contention geometry
-CONFLICT_RADIUS = 3.5        # peers further than this cannot conflict this tick
 HEAD_ON_DOT = -0.55          # cos of the heading difference that counts as opposed
 CLAIM_PENALTY = 14.0         # A* cost added to a superior peer's claimed cell
 COURTESY_PENALTY = 1.5       # ... and to an inferior peer's, to spread traffic
-DETOUR_BOUND = 1.9           # give up on rerouting past this ratio and throttle
 
 # Two robots that meet nose-to-nose on open floor will each refuse to close
 # the last metre, because each is inside the other's clearance envelope, and
@@ -200,17 +200,6 @@ class PeerTable:
     def alive(self):
         return list(self.peers.values())
 
-    def nearby(self, x, y, radius=CONFLICT_RADIUS):
-        return [p for p in self.peers.values()
-                if math.hypot(p["x"] - x, p["y"] - y) <= radius]
-
-    def blocked_cells(self):
-        """Union of every aisle blockage any peer has reported."""
-        out = set()
-        for p in self.peers.values():
-            out.update(p["blocked"])
-        return out
-
 
 class Decision:
     """What the coordination layer wants the motion layer to do this tick."""
@@ -228,12 +217,21 @@ class Decision:
         self.lateral_bias = 0.0     # metres to shift the aim point sideways
 
 
-# The control arm. `stop_and_wait` is the textbook uncoordinated scheme and the
-# one the previous agent implemented: broadcast position, and if a robot with a
-# higher fixed priority is within a radius, stop until it leaves. It is here so
-# the cooperative policy is measured against something real rather than against
-# an estimate.
+# The control arm. `stop_and_wait` is the textbook uncoordinated scheme, and the
+# one the previous version of this agent implemented: broadcast position, and if
+# a robot with a higher fixed priority is within a radius, stop until it leaves.
+# It is here so the cooperative policy is measured against something real rather
+# than against an estimate.
+#
+# It is given the deadlock escape such systems have in practice -- after a
+# timeout, back off for a randomised interval and proceed regardless of
+# priority. Without it the scheme simply gridlocks and any comparison against it
+# is a straw man; with it, it recovers, and what the comparison then measures is
+# the cost of recovering *after* the fact instead of not deadlocking in the
+# first place.
 STOP_AND_WAIT_RADIUS = 2.2
+BASELINE_STALL_TIMEOUT = 10.0
+BASELINE_BACKOFF_S = 4.0
 
 
 class Coordinator:
@@ -245,6 +243,7 @@ class Coordinator:
         self.pass_width = 2.0 * (robot_radius + safety) + 0.25
         self._retreat_until = 0.0
         self._retreat_target = None
+        self._backoff_until = 0.0
 
     # -- helpers -----------------------------------------------------------
 
@@ -274,7 +273,7 @@ class Coordinator:
 
     # -- the decision ------------------------------------------------------
 
-    def decide(self, me, peers, now, path_cells=None, stalled_for=0.0):
+    def decide(self, me, peers, now, stalled_for=0.0):
         """`me` is this robot's FleetState; `peers` the live peer dicts."""
         decision = Decision()
         if not peers:
@@ -282,7 +281,7 @@ class Coordinator:
             return decision
 
         if self.policy == "stop_and_wait":
-            return self._stop_and_wait(me, peers, decision)
+            return self._stop_and_wait(me, peers, decision, now, stalled_for)
 
         my_key = rank_key({"priority": me.priority, "lamport": me.lamport, "id": me.id})
         my_claim = {cell: eta for cell, eta in zip(me.claim, me.eta)}
@@ -397,10 +396,21 @@ class Coordinator:
 
         return decision
 
-
-    def _stop_and_wait(self, me, peers, decision):
+    def _stop_and_wait(self, me, peers, decision, now, stalled_for):
         """Freeze if a statically higher-priority robot is close. No planning
-        penalties, no throttling, no retreat -- exactly the naive scheme."""
+        penalties, no throttling, no passing side, no retreat -- the naive
+        scheme, plus the stall timeout and randomised backoff that keeps it from
+        simply gridlocking."""
+        if now < self._backoff_until:
+            decision.reason = "backing off after a stall"
+            return decision
+        if stalled_for > BASELINE_STALL_TIMEOUT:
+            # Deterministic per-robot jitter, so a run is reproducible and two
+            # robots in the same jam do not pick the same backoff.
+            jitter = ((hash(me.id) % 97) / 97.0) * BASELINE_BACKOFF_S
+            self._backoff_until = now + BASELINE_BACKOFF_S + jitter
+            decision.reason = "stall timeout, backing off"
+            return decision
         for peer in peers:
             dist = math.hypot(peer["x"] - me.x, peer["y"] - me.y)
             if dist < STOP_AND_WAIT_RADIUS and peer["id"] > me.id:

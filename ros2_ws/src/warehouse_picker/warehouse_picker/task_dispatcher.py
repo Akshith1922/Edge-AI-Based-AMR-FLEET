@@ -14,6 +14,7 @@ disguise.
 import json
 import os
 import random
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
@@ -50,7 +51,7 @@ class TaskDispatcher(Node):
                                                       "warehouse_layout.json")
 
         grid = GridMap.load_plan(map_path)
-        layout = json.loads(open(layout_path).read())
+        layout = json.loads(Path(layout_path).read_text())
         start = (layout["robots"][0]["x"], layout["robots"][0]["y"]) \
             if layout.get("robots") else None
         self.stations = derive_stations(grid, layout, reachable_from=start)
