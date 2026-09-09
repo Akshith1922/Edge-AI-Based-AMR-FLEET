@@ -405,8 +405,13 @@ class LocalPlanner:
         self.lim = limits
         self.v_samples = v_samples
         self.w_samples = w_samples
-        self.weights = {"heading": 2.2, "clearance": 1.4, "velocity": 0.7,
-                        "path": 1.1}
+        # Progress is what the robot is for; clearance is a preference on top
+        # of a guarantee, because a trajectory that would actually collide has
+        # already been discarded before it is scored. Weighting clearance
+        # heavily against an *admissible* trajectory only makes the fleet
+        # crawl down aisles it has plenty of room in.
+        self.weights = {"heading": 1.6, "clearance": 0.9, "velocity": 1.2,
+                        "path": 1.8}
         self.last_reason = "idle"
 
     def _window(self, v, w):
@@ -485,12 +490,17 @@ class LocalPlanner:
                 ex, ey, eyaw = poses[-1]
                 head = 1.0 - abs(wrap(math.atan2(carrot[1] - ey, carrot[0] - ex)
                                       - eyaw)) / math.pi
-                dist_gain = (math.hypot(carrot[0] - x, carrot[1] - y)
-                             - math.hypot(carrot[0] - ex, carrot[1] - ey))
+                gain = (math.hypot(carrot[0] - x, carrot[1] - y)
+                        - math.hypot(carrot[0] - ex, carrot[1] - ey))
+                # Normalise against the furthest the robot could possibly get,
+                # so "made 90% of the available progress" scores the same
+                # whatever the speed limit is, and a flat-out run down a clear
+                # aisle actually wins.
+                reachable = max(1e-6, lim.v_max * lim.horizon)
                 score = (self.weights["heading"] * head
                          + self.weights["clearance"] * min(clearance, 1.5) / 1.5
                          + self.weights["velocity"] * (cv / lim.v_max if lim.v_max else 0)
-                         + self.weights["path"] * max(-1.0, min(1.0, dist_gain)))
+                         + self.weights["path"] * max(-1.0, min(1.0, gain / reachable)))
                 if score > best_score:
                     best_score, best = score, (cv, cw)
 

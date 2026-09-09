@@ -1,26 +1,55 @@
-# Edge-AI Based Distributed AMR Fleet Coordination — Simulation & Dashboard
+# Edge-AI Based Distributed AMR Fleet Coordination
 
-A tick-based warehouse fleet simulation that implements all six algorithms from
-*EdgeAI_Fleet_Coordination_Algorithms*, with a live browser dashboard and a
-headless benchmark that compares the coordinated fleet against an
-uncoordinated control arm on an identical workload.
+Decentralised coordination and collision avoidance for a warehouse AMR fleet,
+in two halves that answer two different questions.
 
-**Pure Python standard library. No pip install, no build step, no framework.**
+| | `amrsim/` — the protocol | `ros2_ws/` — the robots |
+|---|---|---|
+| **Question** | Is the coordination logic correct, and what is it worth? | Do real robots actually drive on it? |
+| **World** | 40 × 24 grid, one cell per tick | The MovAi warehouse in Gazebo, 30 × 50 m, continuous |
+| **Robots** | Abstract agents | Tugbots with diff-drive, lidar and a battery |
+| **Runs on** | Anything with Python 3.10 | ROS 2 + Gazebo, or headless via the twin |
+| **Read** | this file | [`ros2_ws/src/warehouse_picker/README.md`](ros2_ws/src/warehouse_picker/README.md) |
+
+Both are pure standard library — no pip install, no framework.
 
 ```bash
+# the protocol, on the grid
 python3 run_dashboard.py          # live dashboard at http://127.0.0.1:8000
 python3 run_benchmark.py          # baseline vs coordinated -> results/report.html
-python3 -m unittest discover -s tests -t .    # 59 tests
+
+# the robots, in the warehouse
+python3 tools/build_map.py                        # rebuild the warehouse map
+python3 tools/twin.py --compare --robots 6        # fleet vs stop-and-wait, headless
+cd ros2_ws && colcon build && source install/setup.bash
+ros2 launch warehouse_picker fleet_warehouse.launch.py
+
+python3 -m unittest discover -s tests -t .        # 107 tests, both halves
 ```
+
+## The warehouse
+
+![The generated warehouse map](ros2_ws/src/warehouse_picker/maps/warehouse_map.png)
+
+Rasterised from the MovAi models' own collision geometry — the building mesh
+sliced at robot height, plus every rack's collision box — and exported as a
+Nav2 map, a pre-inflated planning grid, and this preview. Orange is the 0.55 m
+halo a robot centre must stay out of.
+
+The map is honest about what it finds: the 1.85 m aisle between the two western
+racks has structural columns standing in it, so 74 cells of the floor are
+unreachable and the planner correctly refuses routes into them.
 
 ---
 
-## What this is
+## What `amrsim/` is
 
 A grid-world simulation for **demonstrating and measuring the coordination
-logic**. It is not a physics replacement for a Gazebo/ROS 2 stack: robots move
-one cell per tick and there is no kinematic model. What it *is* faithful to is
-the protocol — Lamport-ordered reservations, deterministic n-way conflict
+logic**. It is not a physics model — robots move one cell per tick — and that
+is the division of labour: `ros2_ws/` carries the kinematics, the lidar and the
+real map, while this half isolates the protocol so it can be stressed at
+densities and failure rates a simulator run would take hours to reach. What it
+*is* faithful to is the protocol — Lamport-ordered reservations, deterministic n-way conflict
 ranking, congestion-aware planning with fairness bounds, wait-graph deadlock
 recovery, gossiped block events with a confirm/soften/clear lifecycle,
 heartbeat TTL failure detection, and a CRDT task pool with a time-boxed
@@ -155,6 +184,21 @@ rate survives, the task-time comparison shifts toward baseline.
 ## Layout
 
 ```
+ros2_ws/src/warehouse_picker/    the Gazebo fleet (see its own README)
+  warehouse_picker/
+    occupancy.py   the map: rasterise, inflate, distance field, ray cast
+    navigation.py  A*, pure pursuit, dynamic-window local planner
+    protocol.py    the P2P mesh: heartbeats, ranking, yielding, deadlock
+    allocation.py  sealed-bid auction with no auctioneer
+    agent_core.py  the whole robot brain, with no ROS in it
+    stations.py    pick faces derived from the rack geometry
+    edge_fleet_agent.py / task_dispatcher.py / fleet_dashboard.py   ROS nodes
+  worlds/ launch/ maps/ config/
+tools/
+  fetch_world_assets.py   derive the layout from the Fuel models
+  build_map.py            rasterise it into Nav2 + planning maps
+  twin.py                 headless fleet: same agent code, no simulator
+
 amrsim/          simulation package (no dependencies)
   config.py      every tunable, named after the reference's constants
   warehouse.py   map, zones, pick faces, automatic corridor detection
@@ -162,7 +206,7 @@ amrsim/          simulation package (no dependencies)
   blocks.py / failures.py / tasks.py
   robot.py  metrics.py  engine.py  scenarios.py
 web/             dashboard server + static client
-tests/           59 unit and end-to-end tests
+tests/           107 unit and end-to-end tests across both halves
 run_dashboard.py run_benchmark.py
 ```
 
@@ -174,7 +218,10 @@ run_dashboard.py run_benchmark.py
   partition and message loss are not exercised here. The Lamport ordering,
   idempotency and CRDT merge that make the real protocol safe *are*
   implemented, so the code would survive being split; the scenarios just do not
-  test it.
+  test it. `ros2_ws/` is the half that does split it: there, each robot is its
+  own process with its own replica, exchanging serialised messages over DDS,
+  and a peer that goes quiet is detected by heartbeat TTL rather than by
+  reading a shared variable.
 * **Discrete ticks, one cell per tick.** No acceleration, turning cost, or
   continuous motion beyond the hard-stop penalty described above.
 * **Wait-graph cycles are rare by construction.** Because the space-time
@@ -183,6 +230,7 @@ run_dashboard.py run_benchmark.py
   genuine safety net rather than a hot path here; it is exercised directly by
   unit tests and by the `aisle_gridlock` scenario.
 * **Battery is cosmetic.** It drains and gates task bidding, but there is no
-  charging behaviour.
+  charging behaviour. The Gazebo agent does have one: it releases its task and
+  drives to the charging station below 22%.
 
 See `GUIDE.md` for a walkthrough, demo script, and how to extend it.

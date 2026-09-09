@@ -207,11 +207,9 @@ class Twin:
 
             self._check_collisions()
 
-            done = {t.id for t in self.tasks} - self._outstanding()
-            for tid in done - (set(self.tasks and remaining) ^ set()):
-                pass
+            outstanding = self._outstanding()
             for tid in list(remaining):
-                if tid not in self._outstanding():
+                if tid not in outstanding:
                     self.completion_times[tid] = self.now
                     remaining.discard(tid)
 

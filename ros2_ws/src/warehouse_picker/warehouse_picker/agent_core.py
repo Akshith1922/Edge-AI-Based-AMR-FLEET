@@ -37,7 +37,6 @@ TO_PICKUP = "TO_PICKUP"
 TO_DROPOFF = "TO_DROPOFF"
 TO_CHARGER = "TO_CHARGER"
 CHARGING = "CHARGING"
-SERVICING = "SERVICING"
 
 GOAL_TOLERANCE = 0.45
 SERVICE_TIME_S = 2.0
@@ -81,7 +80,7 @@ class EdgeAgent:
 
         self.planner = AStar(grid)
         self.local = LocalPlanner(grid, self.lim)
-        self.tracker = PathTracker(lookahead=max(0.8, 4 * grid.resolution))
+        self.tracker = PathTracker(lookahead=self._lookahead_for(0.0))
         self.peers = PeerTable(robot_id)
         self.coord = Coordinator(grid, self.lim.radius, self.lim.safety, policy)
         self.policy = policy
@@ -167,6 +166,14 @@ class EdgeAgent:
         self._bid_if_idle(now)
         goal = self._goal_for_mode(now)
 
+        if now < self._service_until:
+            # Standing at a pick face with the forks down. The robot is a
+            # stationary obstacle for these few seconds, and it keeps
+            # broadcasting so peers route around it rather than queue behind a
+            # robot they think is about to move.
+            self.tracker.clear()
+            return self._output(0.0, 0.0, now, "loading")
+
         if goal is None:
             self.tracker.clear()
             self.state.goal = None
@@ -206,10 +213,12 @@ class EdgeAgent:
             return self._drive_retreat(decision.retreat_to, now)
         self.state.retreating = False
 
+        self.tracker.lookahead = self._lookahead_for(self.v)
         carrot = self.tracker.carrot(self.x, self.y)
         if carrot is None:
             self._decision_reason = "no route"
             return self._output(0.0, 0.0, now, self._decision_reason)
+        carrot = self._offset_carrot(carrot, decision.lateral_bias)
 
         obstacles = self._obstacles(now, peers)
         v_cmd, w_cmd = self.local.compute(self.x, self.y, self.yaw, self.v, self.w,
@@ -245,6 +254,37 @@ class EdgeAgent:
                                       radius=self.lim.radius, source="peer",
                                       margin=PEER_MARGIN))
         return obstacles
+
+    def _lookahead_for(self, speed):
+        """Aim further ahead the faster you are going.
+
+        A fixed lookahead shorter than the local planner's rollout is a trap:
+        the rollout ends *past* the aim point, so the end-of-rollout heading
+        points back at it and every fast candidate scores badly. The robot then
+        settles at whatever speed keeps the rollout just short of the carrot --
+        here about 0.55 m/s against a 0.8 m/s limit -- and looks like it has a
+        speed limit nobody set.
+        """
+        reach = abs(self.lim.v_max) * self.lim.horizon
+        return max(0.9, min(3.0, 0.6 + 1.6 * abs(speed), reach * 1.6))
+
+    def _offset_carrot(self, carrot, bias):
+        """Shift the aim point sideways to pass oncoming traffic.
+
+        Nudging the *aim point* rather than the path keeps the manoeuvre inside
+        the local planner, where it is checked against the map and the lidar
+        like any other motion: if the shifted point is not on free floor the
+        robot simply does not shift. The global route is untouched, so the
+        robot slides back onto it as soon as the other robot is past.
+        """
+        if abs(bias) < 1e-3:
+            return carrot
+        heading = math.atan2(carrot[1] - self.y, carrot[0] - self.x)
+        nx = carrot[0] + bias * math.cos(heading - math.pi / 2)
+        ny = carrot[1] + bias * math.sin(heading - math.pi / 2)
+        if self.grid.at(*self.grid.world_to_grid(nx, ny)):
+            return carrot
+        return (nx, ny)
 
     def _maybe_replan(self, goal, penalties, now):
         stale = now - self._last_plan > REPLAN_INTERVAL_S
@@ -419,8 +459,6 @@ class EdgeAgent:
 
     def _goal_for_mode(self, now):
         mode = self.state.mode
-        if mode == SERVICING:
-            return None
         if mode == TO_CHARGER:
             return self.charger
         if mode == CHARGING:
@@ -455,6 +493,7 @@ class EdgeAgent:
             self.tasks_done += 1
             self.state.mode = IDLE
             self.state.task = None
+            self._service_until = now + SERVICE_TIME_S
 
     # -- output ------------------------------------------------------------
 

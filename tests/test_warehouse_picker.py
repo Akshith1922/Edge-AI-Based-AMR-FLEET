@@ -421,6 +421,43 @@ class TestEdgeAgent(unittest.TestCase):
         self.assertIsNotNone(FleetState.from_json(out.mesh))
         self.assertIsInstance(json.loads(out.tasks), dict)
 
+    def test_it_reaches_its_speed_limit_on_a_clear_aisle(self):
+        """A lookahead shorter than the local planner's rollout makes the robot
+        overshoot its own aim point, which silently caps it at about 70% of the
+        speed it was configured for."""
+        agent = self.make_agent()
+        agent.submit_task(Task("t0", (-2.9, -6.0), (-2.9, -4.0)))
+        lim = agent.lim
+        x, y, yaw, v, w = -2.9, -21.0, math.pi / 2, 0.0, 0.0
+        peak = 0.0
+        for i in range(160):
+            self.clock[0] = i * 0.1
+            agent.set_pose(x, y, yaw, v, w)
+            out = agent.step(self.clock[0])
+            v += max(-lim.a_lin * 0.1, min(lim.a_lin * 0.1, out.v - v))
+            w += max(-lim.a_ang * 0.1, min(lim.a_ang * 0.1, out.w - w))
+            v = max(lim.v_min, min(lim.v_max, v))
+            yaw += w * 0.1
+            x += v * math.cos(yaw) * 0.1
+            y += v * math.sin(yaw) * 0.1
+            peak = max(peak, v)
+        self.assertGreater(peak, 0.95 * lim.v_max)
+
+    def test_oncoming_traffic_makes_it_move_over_not_stop(self):
+        """Two robots nose-to-nose on open floor each sit inside the other's
+        clearance envelope and creep to a mutual standstill. Passing on an
+        agreed side breaks that without either having to give way."""
+        plan = load_plan()
+        me = FleetState("amr_1")
+        me.x, me.y, me.yaw = 0.0, 14.0, 0.0        # wide open northern hall
+        peer = {"id": "amr_2", "x": 2.6, "y": 14.0, "yaw": math.pi, "v": 0.5,
+                "priority": 9.0, "lamport": 0, "claim": [], "eta": [],
+                "waiting_for": None, "blocked": [], "retreating": False}
+        decision = Coordinator(plan).decide(me, [peer], 0.0)
+        self.assertNotEqual(decision.lateral_bias, 0.0)
+        self.assertIsNone(decision.retreat_to)
+        self.assertNotEqual(decision.speed_cap, 0.0)
+
     def test_a_peer_directly_ahead_slows_it_down(self):
         agent = self.make_agent()
         agent.submit_task(Task("t0", (2.9, -10.0), (2.9, -6.0)))

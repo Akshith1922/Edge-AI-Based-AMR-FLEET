@@ -34,7 +34,6 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
 from .agent_core import EdgeAgent
-from .allocation import Task
 from .navigation import Limits
 from .occupancy import GridMap
 from .stations import charger_station

@@ -57,6 +57,17 @@ CLAIM_PENALTY = 14.0         # A* cost added to a superior peer's claimed cell
 COURTESY_PENALTY = 1.5       # ... and to an inferior peer's, to spread traffic
 DETOUR_BOUND = 1.9           # give up on rerouting past this ratio and throttle
 
+# Two robots that meet nose-to-nose on open floor will each refuse to close
+# the last metre, because each is inside the other's clearance envelope, and
+# they creep to a mutual standstill that neither the head-on rule nor the
+# throttle sees -- there is no corridor to contest and no claim overlap, so as
+# far as the coordination layer is concerned nothing is wrong. Robots pass on
+# an agreed side instead. Both apply the same offset, so the symmetry is broken
+# by the convention rather than by a negotiation, and neither has to stop.
+PASS_SIDE = -1.0             # -1 keeps right (clockwise); +1 keeps left
+PASS_OFFSET_M = 0.75
+ONCOMING_RADIUS = 4.5
+
 MIN_TIME_GAP = 2.0           # seconds of following distance when throttling
 STALL_SPEED = 0.05           # below this a robot counts as not moving
 DEADLOCK_STALL_S = 3.0       # stalled this long -> look for a wait cycle
@@ -205,7 +216,7 @@ class Decision:
     """What the coordination layer wants the motion layer to do this tick."""
 
     __slots__ = ("speed_cap", "penalties", "waiting_for", "retreat_to",
-                 "reason", "yielded")
+                 "reason", "yielded", "lateral_bias")
 
     def __init__(self):
         self.speed_cap = None       # None = no limit
@@ -214,6 +225,7 @@ class Decision:
         self.retreat_to = None      # (x, y) to reverse towards, or None
         self.reason = "clear"
         self.yielded = False
+        self.lateral_bias = 0.0     # metres to shift the aim point sideways
 
 
 # The control arm. `stop_and_wait` is the textbook uncoordinated scheme and the
@@ -304,20 +316,30 @@ class Coordinator:
                     conflict, conflict_eta = peer, mine_eta
                     break
 
-        # --- 3. head-on in a single-file aisle ----------------------------
+        # --- 3. oncoming traffic ------------------------------------------
+        # Anywhere there is room to pass, both robots simply move over. Only
+        # where there is not does anyone have to give way.
         head_on = None
         for peer in peers:
             dx, dy = peer["x"] - me.x, peer["y"] - me.y
             dist = math.hypot(dx, dy)
-            if dist > CONFLICT_RADIUS or dist < 1e-6:
+            if dist > ONCOMING_RADIUS or dist < 1e-6:
                 continue
             facing = math.cos(me.yaw) * math.cos(peer["yaw"]) + \
                 math.sin(me.yaw) * math.sin(peer["yaw"])
             towards = (math.cos(me.yaw) * dx + math.sin(me.yaw) * dy) / dist
-            if facing < HEAD_ON_DOT and towards > 0.4 and self.is_single_file(me.x, me.y):
-                if rank_key(peer) > my_key:
-                    head_on = peer
-                    break
+            if facing >= HEAD_ON_DOT or towards <= 0.4:
+                continue
+            if not self.is_single_file(me.x, me.y):
+                # Wide enough for two: shift over and keep going. Closer
+                # traffic gets a firmer nudge.
+                decision.lateral_bias = PASS_SIDE * PASS_OFFSET_M * min(
+                    1.0, (ONCOMING_RADIUS - dist) / (ONCOMING_RADIUS - 1.0))
+                decision.reason = f"passing {peer['id']}"
+                continue
+            if rank_key(peer) > my_key:
+                head_on = peer
+                break
 
         now_retreating = self._retreat_target is not None and now < self._retreat_until
         if head_on or now_retreating:
