@@ -241,8 +241,7 @@ class EdgeAgent:
         peers = self.peers.alive()
         stalled_for = self._stalled_for(now)
         decision = self.coord.decide(self.state, peers, now,
-                                     stalled_for=stalled_for,
-                                     blocked=self._blocked)
+                                     stalled_for=stalled_for)
         self._decision_reason = decision.reason
         self.state.waiting_for = decision.waiting_for
         if decision.yielded:

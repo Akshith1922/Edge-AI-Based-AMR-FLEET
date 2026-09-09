@@ -265,24 +265,17 @@ class Coordinator:
         self._retreat_target = None
         self._retreat_until = 0.0
 
-    def is_single_file(self, x, y, blocked=()):
-        """True where two robots cannot pass each other.
+    def is_single_file(self, x, y):
+        """True where two robots cannot pass each other, from the map's geometry.
 
-        `blocked` is the set of cells this robot's fleet has *found* to be
-        impassable and gossiped about -- a dropped pallet, a stopped forklift,
-        anything the static map does not know. A 3.8 m aisle with a pallet stack
-        in it is a single-file aisle, and the map will go on insisting it is
-        wide until someone tells it otherwise. Without this the give-way rules
-        never fire at the one place they are needed.
+        Deliberately *not* widened to include cells the fleet has reported
+        blocked. A blocked cell is already closed in the planner, so counting
+        it here as well makes the robot give way and retreat around an
+        obstacle it has already routed past -- and on an open-plan workload
+        that measured 50% slower than not doing it at all. Reported blockages
+        change the route; the corridor rules stay a fact about the building.
         """
-        if self.grid.free_width(x, y) < self.pass_width:
-            return True
-        if not blocked:
-            return False
-        col, row = self.grid.world_to_grid(x, y)
-        reach = max(2, int(1.6 / self.grid.resolution))
-        return any(abs(bc - col) <= reach and abs(br - row) <= reach
-                   for (bc, br) in blocked)
+        return self.grid.free_width(x, y) < self.pass_width
 
     def nearest_passing_bay(self, x, y, yaw, max_back=6.0):
         """Search backwards along the robot's own heading for somewhere to wait.
@@ -306,7 +299,7 @@ class Coordinator:
 
     # -- the decision ------------------------------------------------------
 
-    def decide(self, me, peers, now, stalled_for=0.0, blocked=()):
+    def decide(self, me, peers, now, stalled_for=0.0):
         """`me` is this robot's FleetState; `peers` the live peer dicts."""
         decision = Decision()
         if not peers:
@@ -373,7 +366,7 @@ class Coordinator:
             towards = (math.cos(me.yaw) * dx + math.sin(me.yaw) * dy) / dist
             if facing >= HEAD_ON_DOT or towards <= 0.4:
                 continue
-            if dist > PASS_ENGAGE_M and not self.is_single_file(me.x, me.y, blocked):
+            if dist > PASS_ENGAGE_M and not self.is_single_file(me.x, me.y):
                 # Still far enough apart to slip past: shift over and keep
                 # going. Closer traffic gets a firmer nudge.
                 decision.lateral_bias = PASS_SIDE * PASS_OFFSET_M * min(
@@ -422,7 +415,7 @@ class Coordinator:
         # earns its place by handling what the local planner *cannot* see -- two
         # robots entering one aisle from opposite ends -- not by second-guessing
         # what it can.
-        if conflict is not None and not self.is_single_file(me.x, me.y, blocked):
+        if conflict is not None and not self.is_single_file(me.x, me.y):
             conflict = None
         if conflict is not None:
             gap = math.hypot(conflict["x"] - me.x, conflict["y"] - me.y)
