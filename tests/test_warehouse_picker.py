@@ -105,6 +105,53 @@ class TestMap(unittest.TestCase):
                                delta=1e-6)
 
 
+class TestNav2Export(unittest.TestCase):
+    """The published map has to be loadable by map_server, not just by us."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pgm = PKG / "maps" / "warehouse.pgm"
+        cls.yaml = PKG / "maps" / "warehouse.yaml"
+        cls.grid = GridMap.from_layout(load_layout(), 0.05)
+
+    def test_the_yaml_describes_the_grid_that_was_exported(self):
+        text = self.yaml.read_text()
+        self.assertIn("image: warehouse.pgm", text)
+        self.assertIn(f"resolution: {self.grid.resolution}", text)
+        self.assertIn(f"origin: [{self.grid.origin_x}, {self.grid.origin_y}, 0.0]",
+                      text)
+        self.assertIn("negate: 0", text)
+
+    def test_the_pgm_reads_back_as_the_same_occupancy(self):
+        raw = self.pgm.read_bytes()
+        self.assertTrue(raw.startswith(b"P5"))
+        # header: magic, optional comments, "w h", maxval, then binary
+        fields, i = [], 2
+        while len(fields) < 3:
+            while i < len(raw) and raw[i:i + 1].isspace():
+                i += 1
+            if raw[i:i + 1] == b"#":
+                while raw[i:i + 1] not in (b"\n", b""):
+                    i += 1
+                continue
+            start = i
+            while i < len(raw) and not raw[i:i + 1].isspace():
+                i += 1
+            fields.append(int(raw[start:i]))
+        width, height, maxval = fields
+        pixels = raw[i + 1:]
+        self.assertEqual((width, height), (self.grid.w, self.grid.h))
+        self.assertEqual(maxval, 255)
+        self.assertEqual(len(pixels), width * height)
+
+        # Image row 0 is the top of the map, i.e. maximum y.
+        for row in (0, self.grid.h // 3, self.grid.h - 1):
+            for col in (0, self.grid.w // 2, self.grid.w - 1):
+                exported = pixels[(self.grid.h - 1 - row) * width + col]
+                self.assertEqual(exported == 0, bool(self.grid.at(col, row)),
+                                 f"cell ({col}, {row}) disagrees with the PGM")
+
+
 class TestPlanner(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
