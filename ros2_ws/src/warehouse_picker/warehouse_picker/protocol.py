@@ -376,10 +376,10 @@ class Coordinator:
             if rank_key(peer) > my_key:
                 head_on = peer
                 break
-            # I have right of way, but say who I am negotiating with so the
-            # wait-for graph can see the pair. A robot that reports nothing is
-            # invisible to deadlock detection.
-            decision.waiting_for = decision.waiting_for or None
+            # I have right of way. Deliberately *not* setting waiting_for: this
+            # robot is not waiting for anybody, and claiming otherwise would put
+            # a false edge in the wait-for graph and invent deadlock cycles that
+            # do not exist.
             decision.reason = f"holding line against {peer['id']}"
 
         now_retreating = self._retreat_target is not None and now < self._retreat_until
