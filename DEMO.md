@@ -4,12 +4,16 @@ Three ways to show the fleet, in order of how much hardware they need.
 
 ---
 
-## 1. No simulator: the headless twin (any laptop, ~40 s)
+## 1. No simulator: the headless twin (any laptop, a few minutes)
 
 The twin runs the **same `EdgeAgent` code** the robots run, against the same
 warehouse map, with lidar synthesised by ray-casting the occupancy grid. It is
 the fastest way to show the behaviour and the only way to run the same workload
 twice under two different coordination policies.
+
+A six-robot run takes two to four minutes of wall clock for several minutes of
+simulated time, on one core, with nothing installed. `--compare` runs it twice,
+so budget roughly double.
 
 ```bash
 python3 tools/twin.py --robots 6 --scenario rush_hour --tasks 12
@@ -37,8 +41,8 @@ nothing for the coordination layer to resolve and the two arms come out level;
 
 ```bash
 python3 tools/twin.py --robots 6 --scenario rush_hour --tasks 12 \
-        --trace results/trace.json
-python3 tools/make_demo.py results/trace.json -o results/fleet_demo.html
+        --trace results/trace_demo.json
+python3 tools/make_demo.py results/trace_demo.json -o results/fleet_demo.html
 ```
 
 One self-contained HTML file — map embedded, trace inline, no server and no
