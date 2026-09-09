@@ -268,13 +268,30 @@ Six Tugbots, twelve pick-and-drop tasks, 900-second window:
 | | fleet time spent yielding | 2687 s | **268 s** | |
 | | inter-robot collisions | 0 | **0** | |
 | | robots that hit the pallet | 0 | **0** | |
-| **Crossing** — pickups and drops scattered across the building | delivered | 12 / 12 | 12 / 12 | |
+| **Crossing** — pickups and drops scattered across the building, seed 7 | delivered | 12 / 12 | 12 / 12 | |
 | | makespan | 231.1 s | **223.9 s** | −3.1% |
 | | inter-robot collisions | 0 | **0** | |
 
 Zero collisions in every run of both arms, which is what the local planner
 guarantees — it is not a property of the coordination layer and the control
 arm gets it too.
+
+The crossing scenario is **seed-dependent**, and it is worth showing that
+rather than quoting the flattering seed. Three seeds, same six robots, same
+twelve tasks, only the random choice of which rack faces the work sits at:
+
+| Seed | stop-and-wait | cooperative | | |
+|---|---|---|---|---|
+| 7 | 12/12 in 231.1 s | 12/12 in **223.9 s** | −3.1% | the two arms are level |
+| 11 | 12/12 in **157.1 s** | 12/12 in 184.6 s | +17.5% | coordination costs a detour it did not need |
+| 23 | 11/12, 671.4 s for 11 | **12/12**, 223.8 s for 11 | −66.7% | this seed's work happened to concentrate |
+
+Whether scattered work is contended is luck. When the draw puts several
+deliveries at the same end of the building the coordinated fleet wins by as
+much as it does at rush hour; when it does not, the congestion penalties in
+the planner buy a detour that was never needed and cost up to 17%. Rush hour
+and the blocked aisle are contended *by construction*, which is why they are
+the headline cases and this one is reported as a spread.
 
 ### Why the scenarios differ so much, and why that is the interesting part
 

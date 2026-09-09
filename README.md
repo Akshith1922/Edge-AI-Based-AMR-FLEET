@@ -56,13 +56,19 @@ planner, same lidar, same tasks, only conflict resolution differs:
 |---|---|---|---|
 | Rush hour, all traffic through two aisles | 6/12 → **11/12** | 834 s → **251 s** (**−70%**) | 0 → **0** |
 | Blocked aisle, an unmapped pallet narrowing it to 1.2 m | 4/12 → **11/12** | 854 s → **47 s** (**−94%**) | 0 → **0** |
-| Scattered work across a warehouse with no chokepoints | 12/12 → 12/12 | 231 s → **224 s** (−3%) | 0 → **0** |
+| Scattered work, three seeds | 12/12 → 12/12 | −3%, +17%, −67% | 0 → **0** |
 
-The third row is the honest one: `tools/twin.py --measure-corridors` reports
-that **not one cell of this warehouse is single-file** — every aisle takes two
-Tugbots abreast — so when the work is spread out there is nothing for
-coordination to resolve. It earns its 70–94% when the floor is contended, which
-is the case the brief is about.
+The first two rows are contended by construction and the coordinated fleet
+wins both decisively. The third is the honest one: whether scattered work is
+contended at all is luck, and across three seeds coordination ranges from
+winning 67% to costing 17%.
+
+There is a reason, and it is measurable. `tools/twin.py --measure-corridors`
+reports that **not one cell of this warehouse is single-file** — every aisle
+takes two Tugbots abreast — so when the work happens to spread out there is
+nothing for coordination to resolve, and the congestion penalties in the
+planner buy a detour that was never needed. It earns its keep when the floor is
+contended, which is the case the brief is about.
 
 ---
 
