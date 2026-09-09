@@ -46,17 +46,44 @@ class Metrics:
     def avg_reassignment_latency(self):
         return _avg(self.reassignment_latency)
 
+    #: how many recent deliveries the rolling average is taken over
+    ROLLING_WINDOW = 12
+
+    def rolling_task_time(self):
+        """Mean time of the most recent deliveries.
+
+        The cumulative mean is the right headline number but a poor time
+        series: it can only creep, so it never shows the fleet recovering
+        after a block or a failure. This does.
+        """
+        recent = self.completed[-self.ROLLING_WINDOW:]
+        return sum(t for _, t in recent) / len(recent) if recent else 0.0
+
+    def battery(self, robots):
+        live = [r.battery for r in robots if r.is_alive()]
+        if not live:
+            return 0.0, 0.0
+        return sum(live) / len(live), min(live)
+
     def sample(self, tick, robots, pool):
         from .robot import RobotState
+        stats = pool.stats(tick)
+        avg_batt, min_batt = self.battery(robots)
         self.history.append({
             "t": tick,
-            "done": len(self.completed),
-            "pending": pool.pending_count(),
+            "done": stats["delivered"],
+            "received": stats["received"],
+            "pending": stats["pending"] + stats["auction"],
+            "in_progress": stats["in_progress"],
             "waiting": sum(1 for r in robots
                            if r.state in (RobotState.WAITING, RobotState.QUEUED,
                                           RobotState.IN_RESOLUTION)),
             "moving": sum(1 for r in robots if r.state == RobotState.MOVING),
-            "avg": round(self.avg_task_time(), 1),
+            "charging": sum(1 for r in robots if r.charging),
+            "avg": round(self.rolling_task_time(), 1),
+            "avg_all": round(self.avg_task_time(), 1),
+            "battery": round(avg_batt, 1),
+            "battery_min": round(min_batt, 1),
         })
 
     def summary(self):
@@ -81,6 +108,7 @@ class Metrics:
             "corridor_grants": self.corridor_grants,
             "total_distance": self.distance,
             "replans": self.replans,
+            "rolling_task_time": round(self.rolling_task_time(), 2),
         }
 
 

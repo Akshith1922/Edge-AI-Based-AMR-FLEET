@@ -10,7 +10,7 @@ uncoordinated control arm on an identical workload.
 ```bash
 python3 run_dashboard.py          # live dashboard at http://127.0.0.1:8000
 python3 run_benchmark.py          # baseline vs coordinated -> results/report.html
-python3 -m unittest discover -s tests -t .    # 59 tests
+python3 -m unittest discover -s tests -t .    # 66 tests
 ```
 
 ---
@@ -47,6 +47,7 @@ structural rather than incidental.
 | `amrsim/engine.py` | Orchestrates all six per tick, in `coordinated` or `baseline` mode | — |
 | `amrsim/warehouse.py` | The map, and automatic detection of every single-file corridor | — |
 | `amrsim/scenarios.py` | The documented stress cases | — |
+| `amrsim/robot.py` | Per-robot state, priority score, charge cycle | — |
 | `web/` | Dashboard server + client | — |
 
 ## The one architectural decision worth knowing
@@ -138,6 +139,11 @@ rate survives, the task-time comparison shifts toward baseline.
   *detect* it before it appears in the block registry.
 * **Click a robot** (on the floor or in the fleet list) to cut its heartbeat,
   or to revive it.
+* **Task pipeline** panel: everything the WMS has released, split into
+  delivered / in progress / at auction / pending, with a stacked bar. The four
+  buckets always sum back to *received*.
+* **Battery**: fleet average and minimum as a tile, in the fleet header, and as
+  a time series; a robot on charge is shown in its own state.
 * Live: reservation heat map, planned paths, chokepoint flow direction and
   queues, which of the six algorithms fired this tick, and the event log.
 * Keyboard: `space` play/pause, `s` step, `r` reset, `m` switch mode.
@@ -162,7 +168,7 @@ amrsim/          simulation package (no dependencies)
   blocks.py / failures.py / tasks.py
   robot.py  metrics.py  engine.py  scenarios.py
 web/             dashboard server + static client
-tests/           59 unit and end-to-end tests
+tests/           66 unit and end-to-end tests
 run_dashboard.py run_benchmark.py
 ```
 
@@ -182,7 +188,15 @@ run_dashboard.py run_benchmark.py
   in normal operation, and `deadlock_events` is usually 0. Algorithm 3 is a
   genuine safety net rather than a hot path here; it is exercised directly by
   unit tests and by the `aisle_gridlock` scenario.
-* **Battery is cosmetic.** It drains and gates task bidding, but there is no
-  charging behaviour.
+* **Charging is a bay, not a queue.** A robot that falls below
+  `BATTERY_MIN_BID` stops bidding, finishes the job it holds (no pre-emption),
+  parks and draws current until `BATTERY_RESUME`. There is no contention for
+  bays and no charge scheduling — a large fleet on a small bank of chargers is
+  not modelled.
+* **The open-ended scenario throttles its own arrivals.** `rush_hour` holds
+  new releases once the outstanding queue reaches `backlog_cap` per robot, so
+  the demo settles into a steady state instead of accumulating a backlog it can
+  never clear. `rush_hour_fixed` — the benchmark scenario — has no such policy:
+  it is a closed task list, which is what makes the comparison fair.
 
 See `GUIDE.md` for a walkthrough, demo script, and how to extend it.

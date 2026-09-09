@@ -113,6 +113,96 @@ class TestInvariants(unittest.TestCase):
                     claims[key] = res.robot_id
 
 
+class TestFleetEndurance(unittest.TestCase):
+    """The fleet must not quietly retire itself while work is queued."""
+
+    def test_a_flat_robot_charges_and_returns_to_service(self):
+        sim = Simulation(mode="coordinated", seed=3, num_robots=6)
+        scenarios.build(sim, "rush_hour")
+        sim.run(30)
+        victim = next(r for r in sim.robots if r.is_alive())
+        victim.battery = CFG.BATTERY_MIN_BID - 1
+
+        sim.step()
+        self.assertTrue(victim.charging, "a low robot must be flagged for charge")
+        self.assertFalse(sim.pool.prefilter(sim.pool.create(
+            "pick", (1, 6), (1, 10), "any", 1.0, sim.tick, "aisle"), victim),
+            "a charging robot must not bid for new work")
+
+        for _ in range(900):
+            sim.step()
+            if not victim.charging:
+                break
+        self.assertFalse(victim.charging, "the robot never finished charging")
+        self.assertGreaterEqual(victim.battery, CFG.BATTERY_RESUME)
+
+    def test_fleet_keeps_working_over_a_long_run(self):
+        """The regression this guards: batteries drained, every robot fell below
+        the bidding floor, nothing recharged them, and the whole fleet parked in
+        the charging bays with a full backlog of unassigned tasks."""
+        sim = Simulation(mode="coordinated", seed=7, num_robots=8)
+        scenarios.build(sim, "rush_hour")
+        sim.run(2500)
+        early = len(sim.metrics.completed)
+        sim.run(1500)
+        self.assertGreater(len(sim.metrics.completed) - early, 50,
+                           "the fleet stopped delivering part-way through the run")
+        self.assertGreater(min(r.battery for r in sim.robots if r.is_alive()), 0.0,
+                           "a robot ran completely flat")
+        working = [r for r in sim.robots if r.is_alive() and r.task is not None]
+        self.assertTrue(working, "every robot is idle while work is outstanding")
+
+    def test_the_task_stream_never_runs_dry(self):
+        sim = Simulation(mode="coordinated", seed=5, num_robots=8)
+        scenarios.build(sim, "rush_hour")
+        sim.run(1400)
+        received = sim.pool.stats(sim.tick)["received"]
+        sim.run(400)
+        self.assertGreater(sim.pool.stats(sim.tick)["received"], received,
+                           "the scenario stopped releasing work at its horizon")
+
+    def test_the_backlog_stays_bounded(self):
+        sim = Simulation(mode="coordinated", seed=7, num_robots=8)
+        scenarios.build(sim, "rush_hour")
+        sim.run(1200)
+        mid = sim.pool.stats(sim.tick)["outstanding"]
+        sim.run(2000)
+        self.assertLessEqual(sim.pool.stats(sim.tick)["outstanding"], mid * 2 + 10,
+                             "the release policy is not holding the queue in check")
+
+    def test_pipeline_counts_reconcile(self):
+        sim = Simulation(mode="coordinated", seed=2, num_robots=8)
+        scenarios.build(sim, "rush_hour")
+        for _ in range(400):
+            sim.step()
+            s = sim.pool.stats(sim.tick)
+            self.assertEqual(
+                s["delivered"] + s["in_progress"] + s["auction"] + s["pending"]
+                + s["recovery"], s["received"],
+                "the pipeline buckets must always sum to what was received")
+            self.assertEqual(s["outstanding"], s["received"] - s["delivered"])
+
+    def test_scheduled_and_recurring_events_both_fire(self):
+        sim = Simulation(mode="coordinated", seed=1, num_robots=4)
+        once, every = [], []
+        sim.schedule(5, lambda s: once.append(s.tick))
+        sim.every_tick(lambda s: every.append(s.tick), start=3)
+        sim.run(10)
+        self.assertEqual(once, [5], "a scheduled event must fire exactly once")
+        self.assertEqual(every, list(range(3, 11)))
+
+    def test_history_carries_every_series_the_dashboard_plots(self):
+        sim = Simulation(mode="coordinated", seed=1, num_robots=6)
+        scenarios.build(sim, "rush_hour")
+        sim.run(40)
+        sample = list(sim.metrics.history)[-1]
+        for key in ("t", "received", "done", "pending", "in_progress", "waiting",
+                    "moving", "charging", "avg", "avg_all", "battery", "battery_min"):
+            self.assertIn(key, sample)
+        self.assertLessEqual(sample["battery_min"], sample["battery"])
+        self.assertLessEqual(sample["waiting"], len(sim.robots))
+
+
 class TestCoordinationBehaviour(unittest.TestCase):
     """The behaviours the coordinated mode is supposed to buy."""
 

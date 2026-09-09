@@ -56,13 +56,27 @@
       <div class="hint">Click a floor cell to drop or lift an obstacle · click a robot to kill or revive it</div>
     </div>
     <div class="charts">
-      <figure><figcaption>Tasks delivered</figcaption><canvas class="spark" id="c_done"></canvas></figure>
+      <figure>
+        <figcaption>Received <i class="sw" style="background:#8b96ad"></i>
+          vs delivered <i class="sw" style="background:#4cc2ff"></i></figcaption>
+        <canvas class="spark" id="c_done"></canvas></figure>
+      <figure><figcaption>Outstanding queue</figcaption><canvas class="spark" id="c_queue"></canvas></figure>
       <figure><figcaption>Robots waiting</figcaption><canvas class="spark" id="c_wait"></canvas></figure>
-      <figure><figcaption>Avg task time</figcaption><canvas class="spark" id="c_avg"></canvas></figure>
+      <figure><figcaption>Avg task time <em>last 12</em></figcaption><canvas class="spark" id="c_avg"></canvas></figure>
+      <figure>
+        <figcaption>Battery <i class="sw" style="background:#3ddc97"></i>
+          avg <i class="sw" style="background:#ffb020"></i> min</figcaption>
+        <canvas class="spark" id="c_batt"></canvas></figure>
     </div>
   </section>
 
   <aside class="rail">
+    <section class="card">
+      <h3>Task pipeline <span class="sub" id="pipeSub"></span></h3>
+      <div class="pipe" id="pipe"></div>
+      <div class="tiles compact" id="taskTiles"></div>
+    </section>
+
     <div class="tiles" id="tiles"></div>
 
     <section class="card">
@@ -76,7 +90,7 @@
     </section>
 
     <section class="card">
-      <h3>Fleet <span class="sub">click a robot to kill or revive it</span></h3>
+      <h3>Fleet <span class="sub" id="fleetSub"></span></h3>
       <div class="fleet" id="fleet"></div>
     </section>
 

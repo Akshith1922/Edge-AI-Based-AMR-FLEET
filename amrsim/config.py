@@ -14,6 +14,15 @@ class Config:
     # ---- fleet -----------------------------------------------------------
     NUM_ROBOTS: int = 8
     BATTERY_DRAIN_PER_CELL: float = 0.04
+    # Charging. Without these a robot's battery only ever falls, and once it
+    # drops under the bidding floor the robot is retired for good — the fleet
+    # quietly parks itself while work piles up in the pool. A robot sitting on
+    # a charging bay draws current; hysteresis between the two thresholds stops
+    # it accepting one job at the floor and immediately dying again.
+    CHARGE_RATE_PER_TICK: float = 0.9
+    BATTERY_MIN_BID: float = 25.0     # below this a robot stops bidding
+    BATTERY_RESUME: float = 65.0      # and stays on charge until it reaches this
+
     # An *unplanned* stop is not free. The safety node in the reference design
     # runs at 20 Hz and cuts speed the moment something enters HARD_STOP_RADIUS,
     # so a robot that gets surprised has to decelerate to zero and accelerate
