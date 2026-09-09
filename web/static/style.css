@@ -56,8 +56,8 @@ select{background:var(--panel2);color:var(--text);border:1px solid var(--line2);
   border-radius:8px;padding:6px 8px;font:inherit;text-transform:none}
 
 /* ------------------------------------------------------------------ body */
-main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:14px;
-  padding:14px 18px 16px;min-height:0}
+main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 336px;
+  grid-template-rows:minmax(0,1fr);gap:14px;padding:14px 18px 16px;min-height:0}
 .stage{display:flex;flex-direction:column;gap:12px;min-width:0}
 .stageHead{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .stageHead h2{font-size:12px;margin:0;text-transform:uppercase;letter-spacing:1.1px;color:var(--dim)}
@@ -72,7 +72,7 @@ main{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 336px;gap:14px;
 #grid{display:block;width:100%;height:auto;border-radius:7px;cursor:crosshair}
 .hint{margin-top:8px;font-size:11px;color:var(--dim2)}
 
-.charts{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;min-height:0;flex:1 1 0}
+.charts{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;flex:1 1 auto;min-height:138px}
 .charts figure{margin:0;background:var(--panel);border:1px solid var(--line);
   border-radius:var(--radius);padding:9px 11px;display:flex;flex-direction:column;min-height:0;overflow:hidden}
 .charts figcaption{font-size:9.5px;text-transform:uppercase;letter-spacing:.7px;

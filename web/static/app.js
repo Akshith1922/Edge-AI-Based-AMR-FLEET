@@ -102,11 +102,33 @@ function cellAt(e) {
 }
 
 /* --------------------------------------------------------------- canvas */
+//: vertical space always reserved for the chart strip, in CSS px
+const CHART_MIN = 138;
+
 function resize() {
   const L = state.layout; if (!L) return;
   const cv = $("grid"), dpr = window.devicePixelRatio || 1;
-  const avail = cv.parentElement.clientWidth - 24;
-  state.cell = Math.max(12, Math.min(26, Math.floor(avail / L.w)));
+  const wrap = cv.parentElement;
+  const stage = document.querySelector(".stage");
+  const head = document.querySelector(".stageHead");
+
+  // Fit the floor to the space that is actually free in BOTH directions.
+  // Sizing on width alone lets a wide-but-short window hand the canvas every
+  // vertical pixel, squeezing the charts under it to nothing — on a 1366x768
+  // laptop they vanished completely.
+  //
+  // The vertical budget is measured, not assumed: the wrapper's own chrome
+  // (its padding plus the hint line) does not depend on the canvas size, so
+  // subtracting the canvas from the wrapper gives it exactly, whatever the
+  // stylesheet later says.
+  const gap = parseFloat(getComputedStyle(stage).rowGap) || 12;
+  const wrapChrome = wrap.offsetHeight - cv.offsetHeight;
+  const availW = wrap.clientWidth - 24;
+  const availH = stage.clientHeight - head.offsetHeight - gap * 2
+                 - wrapChrome - CHART_MIN;
+
+  state.cell = Math.max(11, Math.min(26,
+    Math.min(Math.floor(availW / L.w), Math.floor(availH / L.h))));
   const w = state.cell * L.w, h = state.cell * L.h;
   cv.width = w * dpr; cv.height = h * dpr;
   cv.style.width = w + "px"; cv.style.height = h + "px";
