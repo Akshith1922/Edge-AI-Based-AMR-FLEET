@@ -358,37 +358,52 @@ ros2 launch warehouse_picker fleet_warehouse.launch.py \
 same lidar, same tasks, naive conflict resolution — which is what the benchmark
 measures against.
 
-## What has been verified, and what has not
+## What has been verified
 
-Worth being precise about, because the two halves were checked very
-differently.
+All of it has now been run, including the Gazebo launch, which an earlier
+revision of this file listed as the one part that had not been.
 
-**Verified by running it:**
+**In Gazebo Harmonic 8.15 with ROS 2 Jazzy**, three Tugbots in this world,
+driven by these agents through `ros_gz_bridge`:
 
-* The map, against the Fuel models' own collision geometry, including the
-  connectivity report and the Nav2 export (parsed back the way `map_server`
-  reads it, and checked for orientation as well as content).
-* Every decision the robots make. `agent_core` and everything under it is
-  ROS-free and runs in the headless twin against the real map with ray-cast
-  lidar, which is where all the benchmark numbers and most of the bugs came
-  from.
-* The three ROS nodes' wiring — topics, QoS, the 10 Hz loop, odometry
-  conversion, self-echo rejection, malformed-message handling — against a
-  stubbed `rclpy`.
-* Both browser pages, rendered in headless Chromium.
+* the world loads and pulls its Fuel models; the Tugbot's deprecated
+  `ignition-gazebo-*` plugin names load on Harmonic, which maps them to
+  `gz-sim-*` with a warning;
+* all six robots publish `scan_front` on
+  `/world/world_demo/model/amr_N/link/scan_front/sensor/scan_front/scan`;
+* the scan reads **2.00 m** to the rack beside `amr_1`, against the **1.9 m**
+  the analytically-derived map predicts, so the map agrees with the simulator;
+* every agent acquires its world pose correctly — `[amr_1] odometry acquired;
+  world pose (-2.90, -21.00, 90 deg)`, matching its spawn;
+* the robots plan, drive, deliver and pick up new work: `amr_2` ran a full
+  north-south delivery, from the southern aisle up to (11.6, 9.8) and back;
+* **zero collisions**. Over 55 ground-truth samples the closest any two robots
+  came was 0.92 m, against the 0.80 m at which they would touch;
+* no errors, exceptions or tracebacks in any agent log.
 
-**Not verified by running it:** the Gazebo launch itself. Nothing here has
-been through an actual `ros2 launch` on a machine with Gazebo installed, so
-the parts that only exist at launch time — that the Fuel Tugbot's DiffDrive
-really does publish on `/model/amr_1/odometry` under your Gazebo version, that
-the `scan_front` sensor topic resolves to the path the bridge subscribes to,
-that 8 and 12 seconds are long enough for your machine to load the world —
-are reasoned from the models' own SDF rather than observed. They are the first
-things to check on the first run, and `DEMO.md` has the three `ros2 topic hz`
-commands that tell you which one is wrong.
+Two bugs surfaced the moment it actually ran, and both are fixed: the missing
+Sensors system (no lidar at all) and odometry being in the robot's frame rather
+than the world's. Both are described where they were fixed — in the world file
+and in `edge_fleet_agent.py` — because both were things that looked right on
+paper.
+
+**Also verified by running:** the map against the Fuel models' collision
+geometry including the Nav2 export, every decision the robots make (in the
+headless twin, which is where the benchmark numbers and most of the bugs came
+from), the ROS nodes' wiring against a stubbed `rclpy`, and both browser pages
+in a real browser.
+
+### One thing that does not work in this container
+
+`colcon build` fails with `AttributeError: install_layout`, from a mismatch
+between this image's setuptools and `ament_python`. It is not this package: a
+hand-written, minimal, stock `ament_python` package fails identically here. The
+nodes above were run straight from the source tree with `PYTHONPATH` set, which
+is why the run proves the code and not the packaging. On a normal ROS 2
+install `colcon build` is the ordinary path and `setup.py` here is the stock
+template.
 
 ---
-
 
 ## Tuning
 

@@ -40,6 +40,19 @@ The map is honest about what it finds: the 1.85 m aisle between the two western
 racks has structural columns standing in it, so 74 cells of the floor are
 unreachable and the planner correctly refuses routes into them.
 
+## Running in Gazebo
+
+![The fleet dashboard reading three Tugbots driving in Gazebo](results/fleet_dashboard.png)
+
+Three Tugbots under ROS 2 Jazzy and Gazebo Harmonic, planning and delivering on
+their own, with the dashboard listening to the same peer-to-peer mesh the robots
+use between themselves. Over 55 ground-truth samples the closest two robots came
+was 0.92 m, against the 0.80 m at which they would touch: **zero collisions**.
+
+The scan reads 2.00 m to the rack beside `amr_1`; the map, derived analytically
+from the models' collision geometry, predicts 1.9 m. The map agrees with the
+simulator.
+
 ## The fleet, running
 
 ![Six Tugbots delivering through the warehouse at rush hour](results/fleet_playback.png)

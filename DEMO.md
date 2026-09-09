@@ -64,6 +64,8 @@ ros2 launch warehouse_picker fleet_warehouse.launch.py
 
 Then open **<http://localhost:8080>** for the live fleet dashboard.
 
+![The dashboard against a live fleet](results/fleet_dashboard.png)
+
 The first launch pulls the MovAi models from Fuel and takes a minute or two;
 after that they are cached. The launch file waits 8 s for Gazebo before
 starting the bridge and 12 s before the agents, which is enough on a warm
