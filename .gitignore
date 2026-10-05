@@ -21,3 +21,5 @@ results/sweep_*
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+# colcon writes a log/ beside wherever it was invoked
+log/
