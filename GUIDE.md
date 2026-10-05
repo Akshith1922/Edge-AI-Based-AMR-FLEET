@@ -2,6 +2,12 @@
 
 Everything you need to run this, demo it, defend it in a review, and extend it.
 
+**This guide covers `amrsim/`** — the grid simulation that stresses the
+coordination protocol. For the Gazebo side (the Tugbot fleet, the warehouse
+map, the ROS 2 nodes) see [`DEMO.md`](DEMO.md) for how to run it and
+[`ros2_ws/src/warehouse_picker/README.md`](ros2_ws/src/warehouse_picker/README.md)
+for how it works.
+
 ---
 
 ## 1. Run it
@@ -13,7 +19,7 @@ cd Edge-AI-Based-AMR-FLEET
 
 python3 run_dashboard.py                     # opens http://127.0.0.1:8000
 python3 run_benchmark.py --trials 8          # writes results/report.html
-python3 -m unittest discover -s tests -t .   # 59 tests, ~7 seconds
+python3 -m unittest discover -s tests -t .   # 139 tests, both halves
 ```
 
 Useful flags:
